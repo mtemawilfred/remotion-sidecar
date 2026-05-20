@@ -1,0 +1,8 @@
+node_modules/
+.remotion/
+*.mp4
+*.wav
+*.tmp
+.env
+.DS_Store
+Thumbs.db
