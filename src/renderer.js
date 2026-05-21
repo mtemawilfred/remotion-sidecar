@@ -18,14 +18,26 @@ async function getBundle() {
 
   console.log('[renderer] Bundling Remotion composition — first render only...');
 
+  // ── Diagnostic: confirm assets exist in Docker image before bundling ──────
+  // Remove this block once assets are confirmed present in the image.
+  const assetsPath = path.resolve(__dirname, '../assets');
+  console.log('[renderer] Assets check:', {
+    assetsExists: fs.existsSync(assetsPath),
+    bgmFiles: fs.existsSync(`${assetsPath}/bgm`)
+      ? fs.readdirSync(`${assetsPath}/bgm`)
+      : 'MISSING',
+    sfxFiles: fs.existsSync(`${assetsPath}/sfx`)
+      ? fs.readdirSync(`${assetsPath}/sfx`)
+      : 'MISSING',
+  });
+
   bundlePath = await bundle({
     entryPoint: path.resolve(__dirname, 'composition/index.jsx'),
     // Webpack override: treat React as external so we don't bundle it twice
     webpackOverride: (config) => config,
-    // staticFile('assets/bgm/track.mp3') in components resolves to
-    // /public/assets/bgm/track.mp3 in the browser.
+    // staticFile('assets/bgm/track.mp3') resolves to /public/assets/bgm/track.mp3
     // publicDir is served at /public/ by the Remotion dev server (port 3001).
-    // Pointing it to the repo root means assets/ is served at /public/assets/
+    // Pointing to repo root (/app/) means assets/ is served at /public/assets/
     // which matches exactly what Chrome requests during rendering.
     publicDir: path.resolve(__dirname, '../'),
   });
@@ -45,7 +57,6 @@ async function renderScene(sceneJson) {
   );
 
   // Select the composition — we have one composition: SceneComposer
-  // It reads everything it needs from the inputProps (sceneJson)
   const composition = await selectComposition({
     serveUrl:   bp,
     id:         'SceneComposer',
