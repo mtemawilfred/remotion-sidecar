@@ -1,6 +1,5 @@
 # ── Stage 1: Dependencies ─────────────────────────────────────────────────
 FROM node:20-slim AS deps
-
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
@@ -51,8 +50,12 @@ COPY assets/ ./assets/
 
 COPY package.json ./
 
+# Pre-download Chrome Headless Shell at build time.
+# Remotion uses its own Chrome binary separate from the system Chromium above.
+# Baking it into the image prevents a 108MB download on every cold start.
+RUN npx remotion browser ensure
+
 # Railway assigns PORT dynamically
 ENV PORT=3000
 EXPOSE 3000
-
 CMD ["node", "src/server.js"]
