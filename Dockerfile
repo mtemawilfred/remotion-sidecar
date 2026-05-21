@@ -53,7 +53,7 @@ COPY package.json ./
 # Pre-download Chrome Headless Shell at build time.
 # Remotion uses its own Chrome binary separate from the system Chromium above.
 # Baking it into the image prevents a 108MB download on every cold start.
-RUN npx remotion browser ensure
+RUN node -e "require('@remotion/renderer').ensureBrowser()"
 
 # Railway assigns PORT dynamically
 ENV PORT=3000
