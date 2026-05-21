@@ -6,6 +6,7 @@
 const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
+
 const { bundle }      = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
 
@@ -21,6 +22,12 @@ async function getBundle() {
     entryPoint: path.resolve(__dirname, 'composition/index.jsx'),
     // Webpack override: treat React as external so we don't bundle it twice
     webpackOverride: (config) => config,
+    // staticFile('assets/bgm/track.mp3') in components resolves to
+    // /public/assets/bgm/track.mp3 in the browser.
+    // publicDir is served at /public/ by the Remotion dev server (port 3001).
+    // Pointing it to the repo root means assets/ is served at /public/assets/
+    // which matches exactly what Chrome requests during rendering.
+    publicDir: path.resolve(__dirname, '../'),
   });
 
   console.log('[renderer] Bundle complete:', bundlePath);
@@ -48,10 +55,10 @@ async function renderScene(sceneJson) {
   // Render to MP4
   await renderMedia({
     composition,
-    serveUrl:      bp,
-    codec:         'h264',
+    serveUrl:       bp,
+    codec:          'h264',
     outputLocation: outPath,
-    inputProps:    { sceneJson },
+    inputProps:     { sceneJson },
     chromiumOptions: {
       // Use system Chromium installed in Dockerfile
       executablePath: process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
@@ -73,7 +80,6 @@ async function renderScene(sceneJson) {
   // Read the output file into a buffer and delete the temp file
   const buffer = fs.readFileSync(outPath);
   fs.unlinkSync(outPath);
-
   return buffer;
 }
 
