@@ -3,7 +3,7 @@
 // Width, height, fps, and duration are all driven by the scene JSON
 // passed in as inputProps — nothing is hardcoded here.
 
-import { Composition } from 'remotion';
+import { Composition, registerRoot } from 'remotion';
 import { SceneComposer } from '../components/SceneComposer';
 
 // Default props used by the Remotion Studio preview only.
@@ -51,3 +51,4 @@ export const RemotionRoot = () => {
     />
   );
 };
+registerRoot(RemotionRoot);
