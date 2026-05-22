@@ -1,7 +1,14 @@
 // ── layers/ElementsLayer.jsx ──────────────────────────────────────────────
 // Layer 3 — all overlay, chart, and motion graphic components.
 // Every component in the system is registered in COMPONENT_MAP below.
-// To add a new component: create the file, export it, import here, add to map.
+//
+// KEY FIX: scene_start_ms
+// Passed in from SceneComposer and spread onto every component.
+// Components that compare timing against stt_timestamps subtract it
+// to convert absolute voiceover timestamps to scene-local time.
+// Components with start_ms props (ImpactLabel, SectionTitle etc) do NOT
+// need scene_start_ms — their start_ms is already relative to scene start
+// as written by Claude Call 2.
 
 import React from 'react';
 import { AbsoluteFill } from 'remotion';
@@ -71,8 +78,6 @@ import {
 } from '../captions/CaptionSystem';
 
 // ── COMPONENT MAP ──────────────────────────────────────────────────────────
-// Maps component name strings (from scene JSON) to React components.
-// Add every new component here when created.
 const COMPONENT_MAP = {
   // Overlays
   SpotlightCircle,
@@ -138,7 +143,7 @@ const COMPONENT_MAP = {
   KaraokeCaption,
 };
 
-export const ElementsLayer = ({ sceneJson, brand }) => {
+export const ElementsLayer = ({ sceneJson, brand, scene_start_ms = 0 }) => {
   const elements = sceneJson.layers?.elements || [];
   if (elements.length === 0) return null;
 
@@ -155,6 +160,7 @@ export const ElementsLayer = ({ sceneJson, brand }) => {
             key={i}
             brand={brand}
             stt_timestamps={sceneJson.stt_timestamps || []}
+            scene_start_ms={scene_start_ms}
             {...el}
           />
         );
