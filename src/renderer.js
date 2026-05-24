@@ -63,6 +63,18 @@ async function renderScene(sceneJson) {
     inputProps: { sceneJson },
   });
 
+  // ── Canvas size ────────────────────────────────────────────────────────────
+  // Read width and height from scene_json so each workflow can specify its own
+  // canvas without changing this file.
+  //
+  // WF-MG (Motion Graphic Studio) injects width: 1280, height: 720 (720p HD).
+  // WF-A / WF-B do not send width/height — they fall back to 1408×768
+  // which is their confirmed working spec. No breakage to existing workflows.
+  const renderWidth  = sceneJson.width  || 1408;
+  const renderHeight = sceneJson.height || 768;
+
+  console.log(`[renderer] Canvas: ${renderWidth}×${renderHeight}`);
+
   // Render to MP4
   await renderMedia({
     composition,
@@ -76,10 +88,9 @@ async function renderScene(sceneJson) {
       // Required for running in Docker without a real display
       disableWebSecurity: true,
     },
-    // Match canvas spec confirmed from WF2
     fps:    24,
-    width:  1408,
-    height: 768,
+    width:  renderWidth,
+    height: renderHeight,
     // Suppress verbose Remotion logs in production
     onProgress: ({ progress }) => {
       if (Math.round(progress * 100) % 25 === 0) {
