@@ -118,4 +118,4 @@ async function renderScene(sceneJson) {
   return buffer;
 }
 
-module.exports = { renderScene };
+module.exports = { renderScene };git

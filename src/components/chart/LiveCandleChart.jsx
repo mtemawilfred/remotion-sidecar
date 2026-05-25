@@ -1,33 +1,39 @@
 // ── chart/LiveCandleChart.jsx ─────────────────────────────────────────────
 // The core SVG candlestick chart engine.
-// Every chart overlay component sits on top of this as an additional layer.
 //
-// How candles animate:
-//   - Candles appear one by one from left to right over time
-//   - Each candle takes candle_interval_ms to fully appear
-//   - The chart pans left automatically as new candles appear
-//   - The final candle "builds" in real time — body grows upward/downward
-//     from the open price, wick extends simultaneously
+// HOW CANDLES ANIMATE (updated — fixed position mode):
+//   - All candles occupy permanent left-to-right slots in the chart area.
+//   - Candle 0 always sits at the leftmost slot. Candle N always sits at
+//     its fixed slot. Nothing ever moves.
+//   - Candles appear one by one from left to right over time.
+//   - Each forming candle grows from its open price in the direction of
+//     the close — bullish grows upward, bearish grows downward.
+//   - Once a candle is fully formed it stays in place permanently.
 //
-// OHLC data format:
-//   candles: [{ o, h, l, c }]  — open, high, low, close as relative values 0-1
-//   OR pass raw price values and set price_min / price_max for auto-scaling
+// WHY fixed positions:
+//   Overlays (SupplyZone, OrderBlock, etc.) need to point to specific
+//   candles. If candles move (pan), overlays can never align to them.
+//   Fixed positions make every candle's x coordinate predictable:
+//     candle_center_x = chartX + (N + 0.5) / totalCandles * chartW
+//
+// visible_count prop is accepted for backward compatibility but ignored.
+// All candles are always visible in their fixed slots.
 //
 // Props:
-//   candles           — array of { o, h, l, c } objects
+//   candles            — array of { o, h, l, c } objects
 //   candle_interval_ms — how long each candle takes to appear (default 400ms)
-//   start_ms          — when the chart starts rendering
-//   visible_count     — how many candles visible at once (default 12)
-//   candle_width      — candle body width in px (default 28)
-//   candle_gap        — gap between candles in px (default 8)
-//   bullish_color     — color for bullish candles (default brand.secondary = white)
-//   bearish_color     — color for bearish candles (default brand.gray = #6B7280)
-//   wick_color        — wick color (default same as body)
-//   show_price_axis   — show price labels on right side (default false)
-//   show_baseline     — show bottom baseline (default true)
-//   height_pct        — what fraction of canvas height to use (default 0.65)
-//   y_offset_pct      — vertical offset from top (default 0.05)
-//   x_offset_pct      — horizontal offset from left (default 0.02)
+//   start_ms           — when the chart starts rendering
+//   visible_count      — IGNORED (kept for backward compat with WF-A/WF-B)
+//   candle_width       — candle body width in px (default 28)
+//   candle_gap         — gap between candles in px (default 8)
+//   bullish_color      — color for bullish candles
+//   bearish_color      — color for bearish candles
+//   wick_color         — wick color
+//   show_price_axis    — show price labels on right side (default false)
+//   show_baseline      — show bottom baseline (default true)
+//   height_pct         — fraction of canvas height to use (default 0.65)
+//   y_offset_pct       — vertical offset from top (default 0.05)
+//   x_offset_pct       — horizontal offset from left (default 0.02)
 
 import React from 'react';
 import {
@@ -38,67 +44,76 @@ import {
 } from 'remotion';
 
 export const LiveCandleChart = ({
-  candles           = [],
+  candles            = [],
   candle_interval_ms = 400,
-  start_ms          = 0,
-  visible_count     = 12,
-  candle_width      = 28,
-  candle_gap        = 8,
+  start_ms           = 0,
+  visible_count,            // accepted but ignored — see comment above
+  candle_width       = 28,
+  candle_gap         = 8,
   bullish_color,
   bearish_color,
   wick_color,
-  show_price_axis   = false,
-  show_baseline     = true,
-  height_pct        = 0.65,
-  y_offset_pct      = 0.05,
-  x_offset_pct      = 0.02,
+  show_price_axis    = false,
+  show_baseline      = true,
+  height_pct         = 0.65,
+  y_offset_pct       = 0.05,
+  x_offset_pct       = 0.02,
   brand,
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
 
-  const startFrame     = Math.round((start_ms / 1000) * fps);
+  const startFrame = Math.round((start_ms / 1000) * fps);
   if (frame < startFrame) return null;
 
-  const localFrame     = frame - startFrame;
-  const localMs        = (localFrame / fps) * 1000;
+  const localFrame = frame - startFrame;
+  const localMs    = (localFrame / fps) * 1000;
 
-  // Colors — default to brand values if not explicitly set
+  // ── Colors ───────────────────────────────────────────────────────────────
   const bullColor = bullish_color || brand?.secondary || '#FFFFFF';
   const bearColor = bearish_color || brand?.gray       || '#6B7280';
   const wkColor   = wick_color   || '#AAAAAA';
 
-  // Chart dimensions
-  const chartX      = width  * x_offset_pct;
-  const chartY      = height * y_offset_pct;
-  const chartW      = width  * (1 - x_offset_pct * 2);
-  const chartH      = height * height_pct;
-  const colW        = candle_width + candle_gap;
+  // ── Chart dimensions ─────────────────────────────────────────────────────
+  const chartX = width  * x_offset_pct;
+  const chartY = height * y_offset_pct;
+  const chartW = width  * (1 - x_offset_pct * 2);
+  const chartH = height * height_pct;
 
-  // How many candles have fully appeared so far
-  const candlesDone  = Math.floor(localMs / candle_interval_ms);
-  const currentIdx   = Math.min(candlesDone, candles.length - 1);
-
-  // Build progress of the current forming candle (0 to 1)
+  // ── How many candles have appeared so far ────────────────────────────────
+  // candlesDone: number of fully completed candles
+  // currentIdx:  index of the candle currently forming (or last candle)
+  const candlesDone    = Math.floor(localMs / candle_interval_ms);
+  const currentIdx     = Math.min(candlesDone, candles.length - 1);
   const currentProgress = (localMs % candle_interval_ms) / candle_interval_ms;
 
-  // Which candles are visible (pan left as chart grows)
-  const firstVisible = Math.max(0, currentIdx - visible_count + 1);
-  const visibleCandles = candles.slice(firstVisible, currentIdx + 1);
-
-  // Price range for scaling — use all currently visible candles
-  const allVisible = candles.slice(0, currentIdx + 1);
-  const priceMin = allVisible.length > 0
-    ? Math.min(...allVisible.map(c => c.l)) * 0.999
+  // ── Price scaling ─────────────────────────────────────────────────────────
+  // Use ALL candles for price range — not just visible ones.
+  // This keeps the y-axis stable for the entire video so candles do not
+  // jump up or down as new ones appear. A stable y-axis is essential for
+  // overlays (zones, levels) to stay aligned to the correct price.
+  const priceMin = candles.length > 0
+    ? Math.min(...candles.map(c => c.l)) * 0.998
     : 0;
-  const priceMax = allVisible.length > 0
-    ? Math.max(...allVisible.map(c => c.h)) * 1.001
+  const priceMax = candles.length > 0
+    ? Math.max(...candles.map(c => c.h)) * 1.002
     : 1;
   const priceRange = priceMax - priceMin || 1;
 
-  // Convert price to Y coordinate (inverted — higher price = lower Y)
+  // Convert price to Y pixel (inverted — higher price = lower Y on screen)
   const priceToY = (price) =>
     chartY + chartH - ((price - priceMin) / priceRange) * chartH;
+
+  // ── Fixed slot width per candle ───────────────────────────────────────────
+  // Divide the full chart width equally among all candles.
+  // Each candle gets slotW pixels. The body sits centred in the slot
+  // with candle_gap as padding on each side.
+  const totalCandles = candles.length;
+  const slotW        = totalCandles > 0 ? chartW / totalCandles : chartW;
+
+  // Effective body width: slot width minus gap on both sides.
+  // Clamped so body is never wider than the slot or thinner than 2px.
+  const bodyW = Math.max(2, Math.min(slotW - candle_gap * 2, slotW * 0.7));
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
@@ -107,19 +122,19 @@ export const LiveCandleChart = ({
         height={height}
         style={{ position: 'absolute', top: 0, left: 0 }}
       >
-        {/* Baseline */}
+        {/* ── Baseline ──────────────────────────────────────────────────── */}
         {show_baseline && (
           <line
             x1={chartX}
             y1={chartY + chartH}
             x2={chartX + chartW}
             y2={chartY + chartH}
-            stroke="rgba(255,255,255,0.15)"
+            stroke="rgba(0,0,0,0.10)"
             strokeWidth={1}
           />
         )}
 
-        {/* Price axis on right */}
+        {/* ── Price axis ────────────────────────────────────────────────── */}
         {show_price_axis && (
           <>
             {[0, 0.25, 0.5, 0.75, 1].map((frac, i) => {
@@ -130,14 +145,14 @@ export const LiveCandleChart = ({
                   <line
                     x1={chartX} y1={y}
                     x2={chartX + chartW} y2={y}
-                    stroke="rgba(255,255,255,0.06)"
+                    stroke="rgba(0,0,0,0.06)"
                     strokeWidth={1}
                     strokeDasharray="4 6"
                   />
                   <text
                     x={chartX + chartW + 8}
                     y={y + 4}
-                    fill="rgba(255,255,255,0.4)"
+                    fill="rgba(0,0,0,0.4)"
                     fontSize={11}
                     fontFamily="monospace"
                   >
@@ -149,70 +164,84 @@ export const LiveCandleChart = ({
           </>
         )}
 
-        {/* Candles */}
-        {visibleCandles.map((candle, vi) => {
-          const globalIdx = firstVisible + vi;
-          const isCurrentForming = globalIdx === currentIdx && currentIdx < candles.length;
+        {/* ── Candles ───────────────────────────────────────────────────── */}
+        {candles.map((candle, globalIdx) => {
+
+          // Only render candles that have started appearing
+          if (globalIdx > currentIdx) return null;
+
+          const isForming = globalIdx === currentIdx && currentIdx < candles.length;
           const isBullish = candle.c >= candle.o;
+          const progress  = isForming ? currentProgress : 1;
 
-          // For the forming candle, animate body growth
-          const progress = isCurrentForming ? currentProgress : 1;
-
-          // Interpolate close toward open for forming candle animation
-          const animatedClose = isCurrentForming
-            ? candle.o + (candle.c - candle.o) * progress
-            : candle.c;
-          const animatedHigh = isCurrentForming
-            ? candle.o + (candle.h - candle.o) * progress * (isBullish ? 1 : 0.3)
+          // ── Animated values for the forming candle ─────────────────────
+          // Bullish: body grows upward from open toward close.
+          //          High wick extends upward simultaneously.
+          //          Low wick is immediate (already below open).
+          // Bearish: body grows downward from open toward close.
+          //          Low wick extends downward simultaneously.
+          //          High wick is immediate (already above open).
+          const animatedClose = candle.o + (candle.c - candle.o) * progress;
+          const animatedHigh  = isForming
+            ? (isBullish
+                ? candle.o + (candle.h - candle.o) * progress
+                : candle.h)
             : candle.h;
-          const animatedLow = isCurrentForming
-            ? candle.o + (candle.l - candle.o) * progress * (isBullish ? 0.3 : 1)
+          const animatedLow   = isForming
+            ? (isBullish
+                ? candle.l
+                : candle.o + (candle.l - candle.o) * progress)
             : candle.l;
 
-          // X position — right-aligned, newest candle at right side
-          const x = chartX + chartW - (visibleCandles.length - vi) * colW + candle_gap / 2;
+          // ── Fixed x position ───────────────────────────────────────────
+          // Each candle occupies a permanent slot. Candle N's slot starts
+          // at chartX + (N / totalCandles) * chartW.
+          // The body is centred within that slot.
+          const slotLeft  = chartX + (globalIdx / totalCandles) * chartW;
+          const candleX   = slotLeft + (slotW - bodyW) / 2;
+          const wickCentreX = slotLeft + slotW / 2;
 
+          // ── Y positions ────────────────────────────────────────────────
           const bodyTop    = priceToY(Math.max(candle.o, animatedClose));
           const bodyBottom = priceToY(Math.min(candle.o, animatedClose));
-          const bodyH      = Math.max(bodyBottom - bodyTop, 1); // min 1px height
-
+          const bodyH      = Math.max(bodyBottom - bodyTop, 1);
           const wickTop    = priceToY(animatedHigh);
           const wickBottom = priceToY(animatedLow);
 
-          const color = isBullish ? bullColor : bearColor;
-          const candleX = x + (colW - candle_width) / 2;
+          const color   = isBullish ? bullColor : bearColor;
 
-          // Opacity: older candles slightly faded, current candle full
-          const opacity = globalIdx < currentIdx ? 0.85 : 1;
+          // Fully formed past candles render at 85% opacity so the
+          // currently forming candle stands out at full opacity.
+          const opacity = isForming ? 1 : 0.85;
 
           return (
             <g key={globalIdx} opacity={opacity}>
-              {/* Wick — top and bottom */}
+              {/* Upper wick */}
               <line
-                x1={candleX + candle_width / 2}
-                y1={wickTop}
-                x2={candleX + candle_width / 2}
-                y2={bodyTop}
+                x1={wickCentreX} y1={wickTop}
+                x2={wickCentreX} y2={bodyTop}
                 stroke={wkColor}
                 strokeWidth={1.5}
               />
+              {/* Lower wick */}
               <line
-                x1={candleX + candle_width / 2}
-                y1={bodyBottom}
-                x2={candleX + candle_width / 2}
-                y2={wickBottom}
+                x1={wickCentreX} y1={bodyBottom}
+                x2={wickCentreX} y2={wickBottom}
                 stroke={wkColor}
                 strokeWidth={1.5}
               />
-
-              {/* Candle body */}
+              {/* Body */}
               <rect
                 x={candleX}
                 y={bodyTop}
-                width={candle_width}
+                width={bodyW}
                 height={bodyH}
                 fill={color}
-                stroke={color === '#FFFFFF' || color === 'white' ? 'rgba(180,180,180,0.4)' : 'none'}
+                stroke={
+                  color === '#FFFFFF' || color === 'white'
+                    ? 'rgba(180,180,180,0.4)'
+                    : 'none'
+                }
                 strokeWidth={0.5}
               />
             </g>
@@ -224,7 +253,6 @@ export const LiveCandleChart = ({
 };
 
 // ── Helper: generate sample OHLC data for testing ─────────────────────────
-// Use this in mock scene JSONs to test the chart without real price data
 export function generateSampleCandles(count = 20, trend = 'up', volatility = 0.02) {
   const candles = [];
   let price = 1.0850;

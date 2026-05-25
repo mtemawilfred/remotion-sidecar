@@ -148,6 +148,39 @@ export const ChartScene = ({ sceneJson }) => {
   // that sits on top of the LiveCandleChart.
   const overlays = sceneJson.overlays || [];
 
+  // ── Price-to-pixel conversion functions ───────────────────────────────────
+  // These convert real price values and candle indexes into pixel positions.
+  // All overlay components use these functions so labels attach to price,
+  // not to arbitrary percentage coordinates that drift as the chart scales.
+  //
+  // priceToY(price) → pixel Y within the full canvas
+  //   Uses all candles for price range so the scale is stable for the whole video.
+  //   Higher price = lower Y (standard chart convention).
+  //
+  // candleToX(index) → pixel X center of that candle within the full canvas
+  //   Matches exactly the x position used by LiveCandleChart in fixed-slot mode.
+  //   Candle 0 is at the left, candle N is at the right. Nothing moves.
+
+  const priceMin = candles.length > 0
+    ? Math.min(...candles.map(c => c.l)) * 0.998
+    : 0;
+  const priceMax = candles.length > 0
+    ? Math.max(...candles.map(c => c.h)) * 1.002
+    : 1;
+  const priceRange = priceMax - priceMin || 1;
+
+  // Convert a real price value to a Y pixel on the canvas
+  const priceToY = (price) =>
+    CHART_Y + CHART_H - ((price - priceMin) / priceRange) * CHART_H;
+
+  // Convert a candle index (0-based) to the X pixel center of that candle
+  const candleToX = (index) =>
+    CHART_X + ((index + 0.5) / Math.max(candles.length, 1)) * CHART_W;
+
+  // Convert a candle index to its left and right pixel edges
+  const candleLeft  = (index) => CHART_X + (index / Math.max(candles.length, 1)) * CHART_W;
+  const candleRight = (index) => CHART_X + ((index + 1) / Math.max(candles.length, 1)) * CHART_W;
+
   // ── Audio ────────────────────────────────────────────────────────────────
   const soundEffects = sceneJson.assets?.sound_effects || [];
 
@@ -209,6 +242,13 @@ export const ChartScene = ({ sceneJson }) => {
               chartY={CHART_Y}
               chartW={CHART_W}
               chartH={CHART_H}
+              priceToY={priceToY}
+              candleToX={candleToX}
+              candleLeft={candleLeft}
+              candleRight={candleRight}
+              totalCandles={candles.length}
+              priceMin={priceMin}
+              priceMax={priceMax}
               brand={brand}
               bgKey={bgKey}
               fps={fps}
@@ -233,6 +273,8 @@ export const ChartScene = ({ sceneJson }) => {
             chartY={CHART_Y}
             chartW={CHART_W}
             chartH={CHART_H}
+            priceToY={priceToY}
+            candleToX={candleToX}
             frame={frame}
             fps={fps}
             brand={brand}
@@ -254,6 +296,8 @@ export const ChartScene = ({ sceneJson }) => {
             chartY={CHART_Y}
             chartW={CHART_W}
             chartH={CHART_H}
+            priceToY={priceToY}
+            candleToX={candleToX}
             frame={frame}
             fps={fps}
             brand={brand}
@@ -323,144 +367,323 @@ export const ChartScene = ({ sceneJson }) => {
 
 // ── ChartOverlay ──────────────────────────────────────────────────────────
 // Renders one overlay element inside the shared SVG.
-// Dispatches to the correct component based on overlay.type.
-// chart_x/y/w/h are passed in pixels so each component positions correctly.
-function ChartOverlay({ overlay, chartX, chartY, chartW, chartH, brand, bgKey, fps, frame }) {
-
-  // ── start_ms gate ────────────────────────────────────────────────────────
-  // Every overlay has a start_ms. Nothing renders before that frame.
+// ALL positioning uses real price values and candle indexes — never percentages.
+//
+// Overlay JSON contract (what Claude must produce):
+//
+//   Zones (supply_zone, demand_zone, fvg):
+//     price_top:    number  — higher price boundary of zone
+//     price_bottom: number  — lower price boundary of zone
+//     candle_start: number  — candle index where zone begins (left edge)
+//     label:        string
+//     start_ms:     number
+//
+//   order_block:
+//     candle_index: number  — index of the specific candle to outline
+//     price_top:    number  — top of candle body (max of open/close)
+//     price_bottom: number  — bottom of candle body (min of open/close)
+//     direction:    'bullish' | 'bearish'
+//     label:        string
+//     start_ms:     number
+//
+//   trade_setup:
+//     entry_price:  number
+//     sl_price:     number
+//     tp_price:     number
+//     candle_start: number  — candle index where lines start
+//     direction:    'long' | 'short'
+//     rr_ratio:     string
+//     start_ms:     number
+//
+//   liquidity:
+//     price_level:  number  — price of the equal highs/lows line
+//     candle_start: number  — candle index where line starts
+//     candle_end:   number  — candle index where line ends
+//     label:        string
+//     swept:        boolean
+//     start_ms:     number
+//
+//   bos_label:
+//     candle_index: number  — candle where the BOS occurs
+//     price_level:  number  — price of the break
+//     direction:    'up' | 'down'
+//     start_ms:     number
+//
+//   candle_label:
+//     candle_index: number  — which candle to label
+//     price_level:  number  — which price on that candle (e.g. candle high)
+//     text:         string
+//     side:         'left' | 'right'
+//     start_ms:     number
+//
+//   floating_label:
+//     candle_index: number  — x position (candle to sit next to)
+//     price_level:  number  — y position (price to sit at)
+//     text:         string
+//     color:        string
+//     start_ms:     number
+//
+// BACKWARD COMPAT: y_pct / x_pct still work as fallback if price values missing.
+function ChartOverlay({
+  overlay, chartX, chartY, chartW, chartH,
+  priceToY, candleToX, candleLeft, candleRight,
+  totalCandles, priceMin, priceMax,
+  brand, bgKey, fps, frame
+}) {
   const startFrame = Math.round((overlay.start_ms / 1000) * fps);
   if (frame < startFrame) return null;
+  const localF = frame - startFrame;
 
-  // Shared props passed to every SVG overlay component
-  const shared = {
-    chart_x: chartX,
-    chart_y: chartY,
-    chart_w: chartW,
-    chart_h: chartH,
-    brand,
-    start_ms: overlay.start_ms,
+  // ── Shared animation helpers ──────────────────────────────────────────────
+  // expandProgress: 0 → 1 over 0.4s — used by zones expanding left to right
+  const expandF    = Math.round(fps * 0.4);
+  const expandProg = Math.min(localF / expandF, 1);
+
+  // fadeProgress: 0 → 1 over 0.25s — used by labels fading in
+  const fadeF    = Math.round(fps * 0.25);
+  const fadeProg = Math.min(localF / fadeF, 1);
+
+  // ── Y position resolver ───────────────────────────────────────────────────
+  // Prefers real price values. Falls back to y_pct if price not provided.
+  const resolveY = (priceVal, pctFallback) => {
+    if (priceVal !== undefined && priceVal !== null) return priceToY(priceVal);
+    if (pctFallback !== undefined) return chartY + pctFallback * chartH;
+    return chartY + chartH * 0.5;
+  };
+
+  // ── X position resolver ───────────────────────────────────────────────────
+  // Prefers candle index. Falls back to x_pct if index not provided.
+  const resolveXCenter = (idx, pctFallback) => {
+    if (idx !== undefined && idx !== null) return candleToX(idx);
+    if (pctFallback !== undefined) return chartX + pctFallback * chartW;
+    return chartX + chartW * 0.5;
+  };
+  const resolveXLeft  = (idx, pctFallback) => {
+    if (idx !== undefined && idx !== null) return candleLeft(idx);
+    if (pctFallback !== undefined) return chartX + pctFallback * chartW;
+    return chartX;
+  };
+  const resolveXRight = (idx, pctFallback) => {
+    if (idx !== undefined && idx !== null) return candleRight(idx);
+    if (pctFallback !== undefined) return chartX + pctFallback * chartW;
+    return chartX + chartW;
   };
 
   switch (overlay.type) {
 
-    case 'supply_zone':
+    // ── SUPPLY ZONE ─────────────────────────────────────────────────────────
+    case 'supply_zone': {
+      const y1 = resolveY(overlay.price_top,    overlay.y_top_pct);
+      const y2 = resolveY(overlay.price_bottom, overlay.y_bottom_pct);
+      const x1 = resolveXLeft(overlay.candle_start, overlay.x_start_pct ?? 0);
+      const x2 = chartX + chartW; // always extends to right edge
+      const w  = (x2 - x1) * expandProg;
+      const h  = Math.abs(y2 - y1);
+      const topY = Math.min(y1, y2);
       return (
-        <SupplyZone
-          y_top_pct={overlay.y_top_pct}
-          y_bottom_pct={overlay.y_bottom_pct}
-          x_start_pct={overlay.x_start_pct ?? 0}
-          x_end_pct={overlay.x_end_pct ?? 1}
-          label={overlay.label}
-          mitigated={overlay.mitigated || false}
-          {...shared}
-        />
+        <g opacity={fadeProg * 0.9}>
+          <rect x={x1} y={topY} width={w} height={h} fill="rgba(200,60,60,0.18)" />
+          <line x1={x1} y1={topY} x2={x1+w} y2={topY} stroke="rgba(220,80,80,0.8)" strokeWidth={1.5} />
+          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(220,80,80,0.6)" strokeWidth={1} strokeDasharray="4 3" />
+          {overlay.label && expandProg > 0.5 && (
+            <text x={x1+6} y={topY+14} fill="rgba(220,80,80,0.95)" fontSize={18} fontFamily="Arial" fontWeight="bold" opacity={fadeProg}>
+              {overlay.label}
+            </text>
+          )}
+        </g>
       );
+    }
 
-    case 'demand_zone':
+    // ── DEMAND ZONE ─────────────────────────────────────────────────────────
+    case 'demand_zone': {
+      const y1 = resolveY(overlay.price_top,    overlay.y_top_pct);
+      const y2 = resolveY(overlay.price_bottom, overlay.y_bottom_pct);
+      const x1 = resolveXLeft(overlay.candle_start, overlay.x_start_pct ?? 0);
+      const x2 = chartX + chartW;
+      const w  = (x2 - x1) * expandProg;
+      const h  = Math.abs(y2 - y1);
+      const topY = Math.min(y1, y2);
       return (
-        <DemandZone
-          y_top_pct={overlay.y_top_pct}
-          y_bottom_pct={overlay.y_bottom_pct}
-          x_start_pct={overlay.x_start_pct ?? 0}
-          x_end_pct={overlay.x_end_pct ?? 1}
-          label={overlay.label}
-          mitigated={overlay.mitigated || false}
-          {...shared}
-        />
+        <g opacity={fadeProg * 0.9}>
+          <rect x={x1} y={topY} width={w} height={h} fill="rgba(60,100,220,0.18)" />
+          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(80,120,230,0.8)" strokeWidth={1.5} />
+          <line x1={x1} y1={topY} x2={x1+w} y2={topY} stroke="rgba(80,120,230,0.6)" strokeWidth={1} strokeDasharray="4 3" />
+          {overlay.label && expandProg > 0.5 && (
+            <text x={x1+6} y={topY+h-6} fill="rgba(80,120,230,0.95)" fontSize={18} fontFamily="Arial" fontWeight="bold" opacity={fadeProg}>
+              {overlay.label}
+            </text>
+          )}
+        </g>
       );
+    }
 
-    case 'order_block':
+    // ── ORDER BLOCK ─────────────────────────────────────────────────────────
+    // Outlines the specific candle body that created the zone.
+    case 'order_block': {
+      const idx = overlay.candle_index;
+      const x1  = idx !== undefined ? candleLeft(idx)  : chartX + (overlay.x_start_pct ?? 0) * chartW;
+      const x2  = idx !== undefined ? candleRight(idx) : chartX + (overlay.x_end_pct   ?? 0.1) * chartW;
+      const y1  = resolveY(overlay.price_top,    overlay.y_top_pct);
+      const y2  = resolveY(overlay.price_bottom, overlay.y_bottom_pct);
+      const topY = Math.min(y1, y2);
+      const h    = Math.abs(y2 - y1);
+      const color = overlay.direction === 'bearish'
+        ? 'rgba(220,80,80,0.9)' : 'rgba(80,120,230,0.9)';
+      const fill  = overlay.direction === 'bearish'
+        ? 'rgba(220,80,80,0.12)' : 'rgba(80,120,230,0.12)';
       return (
-        <OrderBlock
-          y_top_pct={overlay.y_top_pct}
-          y_bottom_pct={overlay.y_bottom_pct}
-          x_start_pct={overlay.x_start_pct}
-          x_end_pct={overlay.x_end_pct}
-          direction={overlay.direction || 'bullish'}
-          label={overlay.label || 'OB'}
-          {...shared}
-        />
+        <g opacity={fadeProg}>
+          <rect x={x1} y={topY} width={x2-x1} height={h}
+            fill={fill} stroke={color} strokeWidth={2} rx={2} />
+          {overlay.label && (
+            <text x={x1+3} y={topY-5} fill={color} fontSize={16}
+              fontFamily="Arial" fontWeight="bold">{overlay.label}</text>
+          )}
+        </g>
       );
+    }
 
-    case 'fvg':
+    // ── FAIR VALUE GAP ───────────────────────────────────────────────────────
+    case 'fvg': {
+      const y1  = resolveY(overlay.price_top,    overlay.y_top_pct);
+      const y2  = resolveY(overlay.price_bottom, overlay.y_bottom_pct);
+      const x1  = resolveXLeft(overlay.candle_start, overlay.x_start_pct ?? 0.3);
+      const x2  = chartX + chartW;
+      const w   = (x2 - x1) * expandProg;
+      const topY = Math.min(y1, y2);
+      const h    = Math.abs(y2 - y1);
       return (
-        <FairValueGap
-          y_top_pct={overlay.y_top_pct}
-          y_bottom_pct={overlay.y_bottom_pct}
-          x_start_pct={overlay.x_start_pct ?? 0.3}
-          x_end_pct={overlay.x_end_pct ?? 1}
-          label={overlay.label || 'FVG'}
-          {...shared}
-        />
+        <g opacity={fadeProg * 0.9}>
+          <rect x={x1} y={topY} width={w} height={h} fill="rgba(170,150,50,0.20)" />
+          <line x1={x1} y1={topY} x2={x1+w} y2={topY} stroke="rgba(200,170,60,0.8)" strokeWidth={1} strokeDasharray="5 4" />
+          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(200,170,60,0.8)" strokeWidth={1} strokeDasharray="5 4" />
+          {overlay.label && expandProg > 0.6 && (
+            <text x={x1+6} y={topY+14} fill="rgba(200,170,60,0.95)" fontSize={18} fontFamily="Arial" fontWeight="bold" opacity={fadeProg}>
+              {overlay.label}
+            </text>
+          )}
+        </g>
       );
+    }
 
-    case 'trade_setup':
+    // ── TRADE SETUP ──────────────────────────────────────────────────────────
+    // Entry, SL, TP lines drawing themselves from candle_start to right edge.
+    case 'trade_setup': {
+      const entryY = resolveY(overlay.entry_price, overlay.entry_y_pct);
+      const slY    = resolveY(overlay.sl_price,    overlay.sl_y_pct);
+      const tpY    = resolveY(overlay.tp_price,    overlay.tp_y_pct);
+      const x1     = resolveXLeft(overlay.candle_start, overlay.x_start_pct ?? 0.5);
+      const x2     = chartX + chartW;
+
+      const phaseF = Math.round(fps * 0.35);
+      const entryP = Math.min(localF / phaseF, 1);
+      const slTpP  = Math.min((localF - phaseF) / phaseF, 1);
+      const zoneP  = Math.min((localF - phaseF*2) / phaseF, 1);
+
+      const gold  = brand?.accent  || '#C9A84C';
+      const green = '#26a69a';
+      const red   = '#ef5350';
+
       return (
-        <TradeSetup
-          entry_y_pct={overlay.entry_y_pct}
-          sl_y_pct={overlay.sl_y_pct}
-          tp_y_pct={overlay.tp_y_pct}
-          x_start_pct={overlay.x_start_pct ?? 0.5}
-          x_end_pct={overlay.x_end_pct ?? 0.98}
-          direction={overlay.direction || 'long'}
-          rr_ratio={overlay.rr_ratio || '1:3'}
-          {...shared}
-        />
+        <g>
+          {/* Entry line */}
+          <line x1={x1} y1={entryY} x2={x1+(x2-x1)*entryP} y2={entryY}
+            stroke={gold} strokeWidth={2} />
+          {entryP > 0.8 && (
+            <text x={x2+4} y={entryY+4} fill={gold} fontSize={16}
+              fontFamily="Arial" fontWeight="bold">ENTRY</text>
+          )}
+          {/* SL line */}
+          {slTpP > 0 && (
+            <line x1={x1} y1={slY} x2={x1+(x2-x1)*slTpP} y2={slY}
+              stroke={red} strokeWidth={1.5} opacity={slTpP} />
+          )}
+          {slTpP > 0.8 && (
+            <text x={x2+4} y={slY+4} fill={red} fontSize={16}
+              fontFamily="Arial" fontWeight="bold">SL</text>
+          )}
+          {/* TP line */}
+          {slTpP > 0 && (
+            <line x1={x1} y1={tpY} x2={x1+(x2-x1)*slTpP} y2={tpY}
+              stroke={green} strokeWidth={1.5} opacity={slTpP} />
+          )}
+          {slTpP > 0.8 && (
+            <text x={x2+4} y={tpY+4} fill={green} fontSize={16}
+              fontFamily="Arial" fontWeight="bold">TP</text>
+          )}
+          {/* Risk zone */}
+          {zoneP > 0 && (
+            <rect x={x1} y={Math.min(entryY,slY)}
+              width={(x2-x1)*zoneP} height={Math.abs(slY-entryY)}
+              fill={`rgba(239,83,80,${0.12*zoneP})`} />
+          )}
+          {/* Profit zone */}
+          {zoneP > 0 && (
+            <rect x={x1} y={Math.min(entryY,tpY)}
+              width={(x2-x1)*zoneP} height={Math.abs(tpY-entryY)}
+              fill={`rgba(38,166,154,${0.12*zoneP})`} />
+          )}
+          {/* R:R label */}
+          {zoneP > 0.7 && overlay.rr_ratio && (
+            <>
+              <rect x={x2-52} y={Math.min(entryY,tpY)+8}
+                width={48} height={20} fill="rgba(20,20,20,0.85)" rx={4} />
+              <text x={x2-50} y={Math.min(entryY,tpY)+22}
+                fill="white" fontSize={13} fontFamily="Arial" fontWeight="bold">
+                {overlay.rr_ratio}
+              </text>
+            </>
+          )}
+        </g>
       );
+    }
 
-    case 'liquidity':
+    // ── LIQUIDITY LEVEL ───────────────────────────────────────────────────────
+    // Horizontal dotted line at a specific price level.
+    case 'liquidity': {
+      const y  = resolveY(overlay.price_level, overlay.y_pct);
+      const x1 = resolveXLeft(overlay.candle_start, overlay.x_start_pct ?? 0);
+      const x2 = overlay.candle_end !== undefined
+        ? candleRight(overlay.candle_end)
+        : chartX + (overlay.x_end_pct ?? 0.7) * chartW;
+      const w  = (x2 - x1) * expandProg;
       return (
-        <LiquidityLevel
-          y_pct={overlay.y_pct}
-          x_start_pct={overlay.x_start_pct ?? 0}
-          x_end_pct={overlay.x_end_pct ?? 0.7}
-          label={overlay.label || '$$$'}
-          swept={overlay.swept || false}
-          {...shared}
-        />
+        <g opacity={fadeProg}>
+          <line x1={x1} y1={y} x2={x1+w} y2={y}
+            stroke="rgba(100,100,100,0.7)" strokeWidth={1.5} strokeDasharray="6 4" />
+          {overlay.label && expandProg > 0.5 && (
+            <text x={x1+4} y={y-5} fill="rgba(80,80,80,0.9)" fontSize={16}
+              fontFamily="Arial" fontWeight="bold" opacity={fadeProg}>
+              {overlay.label}
+            </text>
+          )}
+          {overlay.swept && expandProg > 0.8 && (
+            <text x={x1+w/2-20} y={y+18} fill="rgba(220,80,80,0.9)"
+              fontSize={14} fontFamily="Arial" fontWeight="bold">SWEPT</text>
+          )}
+        </g>
       );
+    }
 
-    case 'trendline':
+    // ── BOS LABEL ────────────────────────────────────────────────────────────
+    case 'bos_label': {
+      const cx = resolveXCenter(overlay.candle_index, overlay.x_pct);
+      const cy = resolveY(overlay.price_level, overlay.y_pct);
+      const lineEnd = cx + (chartX + chartW - cx) * expandProg;
+      const textY   = overlay.direction === 'up' ? cy - 14 : cy + 26;
       return (
-        <TrendLine
-          x1_pct={overlay.x1_pct}
-          y1_pct={overlay.y1_pct}
-          x2_pct={overlay.x2_pct}
-          y2_pct={overlay.y2_pct}
-          color={overlay.color}
-          {...shared}
-        />
+        <g opacity={fadeProg}>
+          <line x1={cx} y1={cy} x2={lineEnd} y2={cy}
+            stroke="rgba(100,100,100,0.6)" strokeWidth={1.5} strokeDasharray="6 4" />
+          {expandProg > 0.3 && (
+            <text x={cx+6} y={textY} fill="rgba(50,50,50,0.9)"
+              fontSize={20} fontFamily="Arial" fontWeight="bold">BOS</text>
+          )}
+        </g>
       );
+    }
 
-    case 'key_level':
-      return (
-        <KeyLevelLine
-          y_pct={overlay.y_pct}
-          label={overlay.label}
-          color={overlay.color}
-          {...shared}
-        />
-      );
-
-    case 'bos_label':
-      // BOS (Break of Structure) label — horizontal dashed line + text
-      return (
-        <BOSLabel
-          x_pct={overlay.x_pct}
-          y_pct={overlay.y_pct}
-          direction={overlay.direction || 'up'}
-          chartX={chartX}
-          chartY={chartY}
-          chartW={chartW}
-          chartH={chartH}
-          frame={frame}
-          fps={fps}
-          start_ms={overlay.start_ms}
-        />
-      );
-
-    // candle_label and floating_label are handled as HTML outside the SVG
+    // candle_label and floating_label handled as HTML — return null here
     case 'candle_label':
     case 'floating_label':
       return null;
@@ -469,119 +692,49 @@ function ChartOverlay({ overlay, chartX, chartY, chartW, chartH, brand, bgKey, f
       return null;
   }
 }
-
-// ── BOSLabel ──────────────────────────────────────────────────────────────
-// Horizontal dashed line with "BOS" text above/below.
-// Appears at the structure break point — synced to the word "break" or "BOS".
-function BOSLabel({ x_pct, y_pct, direction, chartX, chartY, chartW, chartH, frame, fps, start_ms }) {
-  const startFrame = Math.round((start_ms / 1000) * fps);
-  const localF     = frame - startFrame;
-
-  // Line draws from left to right over 0.5s
-  const lineProgress = interpolate(localF, [0, Math.round(fps * 0.5)], [0, 1], {
-    easing: Easing.out(Easing.cubic),
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
-
-  // Label fades in after line is 60% drawn
-  const labelOpacity = interpolate(localF, [Math.round(fps * 0.3), Math.round(fps * 0.6)], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-  });
-
-  const cx      = chartX + x_pct * chartW;
-  const cy      = chartY + y_pct * chartH;
-  const lineEnd = cx + (chartX + chartW - cx) * lineProgress;
-  const textY   = direction === 'up' ? cy - 14 : cy + 26;
-
-  return (
-    <g>
-      {/* Dashed horizontal line at the structure break */}
-      <line
-        x1={cx} y1={cy}
-        x2={lineEnd} y2={cy}
-        stroke="rgba(255,255,255,0.65)"
-        strokeWidth={1.5}
-        strokeDasharray="6 4"
-      />
-      {/* BOS text label */}
-      <text
-        x={cx + 8}
-        y={textY}
-        fill="rgba(255,255,255,0.9)"
-        fontSize={22}
-        fontFamily="Arial"
-        fontWeight="bold"
-        opacity={labelOpacity}
-      >
-        BOS
-      </text>
-    </g>
-  );
-}
-
 // ── CandleLabel ───────────────────────────────────────────────────────────
-// HTML text label pointing to a specific price level on the chart.
-// Used for "High", "Close", "Open", "Low" annotations like the reference video.
-// A small horizontal tick line connects the label to the price level.
-function CandleLabel({ overlay, chartX, chartY, chartW, chartH, frame, fps, brand, bgKey }) {
+// HTML text label attached to a specific candle at a specific price level.
+// Uses candle_index + price_level for positioning — not pixel percentages.
+function CandleLabel({ overlay, chartX, chartY, chartW, chartH, priceToY, candleToX, frame, fps, brand, bgKey }) {
   const startFrame = Math.round((overlay.start_ms / 1000) * fps);
   if (frame < startFrame) return null;
 
-  const localF   = frame - startFrame;
-  const opacity  = interpolate(localF, [0, 8], [0, 1], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
-  });
-  const slideX   = interpolate(localF, [0, 12], [overlay.side === 'right' ? 20 : -20, 0], {
-    easing: Easing.out(Easing.cubic),
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
-  });
+  const localF  = frame - startFrame;
+  const opacity = Math.min(localF / Math.round(fps * 0.25), 1);
+  const slideX  = (1 - opacity) * (overlay.side === 'right' ? 20 : -20);
 
-  // Position within chart zone in pixels
-  const px = chartX + overlay.target_x_pct * chartW;
-  const py = chartY + overlay.target_y_pct * chartH;
+  // Position: prefer candle_index + price_level, fall back to target_x/y_pct
+  const px = overlay.candle_index !== undefined
+    ? candleToX(overlay.candle_index)
+    : chartX + (overlay.target_x_pct ?? 0.5) * chartW;
+  const py = overlay.price_level !== undefined
+    ? priceToY(overlay.price_level)
+    : chartY + (overlay.target_y_pct ?? 0.5) * chartH;
 
   const isLight = bgKey === 'white' || bgKey === 'off_white';
   const textColor = isLight ? '#111111' : '#FFFFFF';
 
   return (
-    <AbsoluteFill
-      style={{
-        pointerEvents: 'none',
-        opacity,
-        transform: `translateX(${slideX}px)`,
-      }}
-    >
-      {/* Horizontal tick line connecting label to price level */}
-      <svg
-        width={CANVAS_W}
-        height={CANVAS_H}
-        style={{ position: 'absolute', top: 0, left: 0 }}
-      >
+    <AbsoluteFill style={{ pointerEvents: 'none', opacity, transform: `translateX(${slideX}px)` }}>
+      <svg width={CANVAS_W} height={CANVAS_H} style={{ position: 'absolute', top: 0, left: 0 }}>
         <line
-          x1={overlay.side === 'right' ? px + 4 : px - 4}
-          y1={py}
-          x2={overlay.side === 'right' ? px + 50 : px - 50}
-          y2={py}
-          stroke={isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)'}
+          x1={overlay.side === 'right' ? px + 4 : px - 4} y1={py}
+          x2={overlay.side === 'right' ? px + 48 : px - 48} y2={py}
+          stroke={isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)'}
           strokeWidth={1.5}
         />
       </svg>
-      {/* Text label */}
-      <div
-        style={{
-          position:   'absolute',
-          top:        py - 12,
-          left:       overlay.side === 'right' ? px + 56 : undefined,
-          right:      overlay.side === 'left'  ? CANVAS_W - px + 56 : undefined,
-          fontFamily: brand.font_body,
-          fontSize:   30,
-          fontWeight: 700,
-          color:      overlay.color || textColor,
-          whiteSpace: 'nowrap',
-        }}
-      >
+      <div style={{
+        position: 'absolute',
+        top:      py - 14,
+        left:     overlay.side === 'right' ? px + 54 : undefined,
+        right:    overlay.side === 'left'  ? CANVAS_W - px + 54 : undefined,
+        fontFamily: brand.font_body,
+        fontSize:   28,
+        fontWeight: 700,
+        color:      overlay.color || textColor,
+        whiteSpace: 'nowrap',
+      }}>
         {overlay.text}
       </div>
     </AbsoluteFill>
@@ -589,56 +742,50 @@ function CandleLabel({ overlay, chartX, chartY, chartW, chartH, frame, fps, bran
 }
 
 // ── ChartFloatingLabel ────────────────────────────────────────────────────
-// "Buy Here", "Sell Here", "4H", "15M" — floating labels at chart positions.
-// Fades and pops in at start_ms. Color drives intent (green=buy, red=sell).
-function ChartFloatingLabel({ overlay, chartX, chartY, chartW, chartH, frame, fps, brand, bgKey }) {
+// Pill label positioned by candle_index + price_level.
+function ChartFloatingLabel({ overlay, chartX, chartY, chartW, chartH, priceToY, candleToX, frame, fps, brand, bgKey }) {
   const startFrame = Math.round((overlay.start_ms / 1000) * fps);
   if (frame < startFrame) return null;
 
   const localF  = frame - startFrame;
-  const opacity = interpolate(localF, [0, 10], [0, 1], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
-  });
-  const scale   = interpolate(localF, [0, 10], [0.8, 1], {
-    easing: Easing.out(Easing.cubic),
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
-  });
+  const opacity = Math.min(localF / Math.round(fps * 0.25), 1);
+  const scale   = 0.8 + 0.2 * opacity;
 
-  const px = chartX + overlay.x_pct * chartW;
-  const py = chartY + overlay.y_pct * chartH;
+  // Position: prefer candle_index + price_level, fall back to x_pct / y_pct
+  const px = overlay.candle_index !== undefined
+    ? candleToX(overlay.candle_index)
+    : chartX + (overlay.x_pct ?? 0.5) * chartW;
+  const py = overlay.price_level !== undefined
+    ? priceToY(overlay.price_level)
+    : chartY + (overlay.y_pct ?? 0.5) * chartH;
 
-  // Color: explicit overlay.color, or infer from text content
-  const text    = overlay.text || '';
-  const isBuy   = text.toLowerCase().includes('buy');
-  const isSell  = text.toLowerCase().includes('sell');
+  const text   = overlay.text || '';
+  const isBuy  = text.toLowerCase().includes('buy');
+  const isSell = text.toLowerCase().includes('sell');
   const bgColor = overlay.color
     ? overlay.color
     : isBuy  ? '#26a69a'
     : isSell ? '#ef5350'
     : brand.accent;
 
-  const isLight = bgKey === 'white' || bgKey === 'off_white';
-
   return (
     <AbsoluteFill style={{ pointerEvents: 'none', opacity }}>
-      <div
-        style={{
-          position:        'absolute',
-          top:             py - 22,
-          left:            px,
-          transform:       `scale(${scale})`,
-          transformOrigin: 'left center',
-          backgroundColor: bgColor,
-          color:           isLight && !overlay.color ? '#FFFFFF' : '#FFFFFF',
-          fontFamily:      brand.font_heading,
-          fontSize:        28,
-          fontWeight:      700,
-          padding:         '6px 16px',
-          borderRadius:    6,
-          whiteSpace:      'nowrap',
-          letterSpacing:   0.5,
-        }}
-      >
+      <div style={{
+        position:        'absolute',
+        top:             py - 22,
+        left:            px + 8,
+        transform:       `scale(${scale})`,
+        transformOrigin: 'left center',
+        backgroundColor: bgColor,
+        color:           '#FFFFFF',
+        fontFamily:      brand.font_heading,
+        fontSize:        26,
+        fontWeight:      700,
+        padding:         '5px 14px',
+        borderRadius:    6,
+        whiteSpace:      'nowrap',
+        letterSpacing:   0.5,
+      }}>
         {text}
       </div>
     </AbsoluteFill>
