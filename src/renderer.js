@@ -1,10 +1,10 @@
 // ── renderer.js ───────────────────────────────────────────────────────────
 // Bundles the Remotion compositions and renders a scene_json to MP4.
 // Routes to the correct composition based on render_type:
-//   CHART_SCENE              → ChartScene  (1080×1920, 30fps, 9:16 vertical)
-//   COMPOSITION              → SceneComposer (1408×768, 24fps, 16:9)
-//   MOTION_GRAPHIC           → SceneComposer (1408×768, 24fps, 16:9)
-//   anything else            → SceneComposer (safe fallback)
+//   CHART_SCENE    → ChartScene  (1080×1920, 30fps, 9:16 vertical)
+//   COMPOSITION    → SceneComposer (1408×768, 24fps, 16:9)
+//   MOTION_GRAPHIC → SceneComposer (1408×768, 24fps, 16:9)
+//   anything else  → SceneComposer (safe fallback)
 
 const path = require('path');
 const os   = require('os');
@@ -14,9 +14,9 @@ const { bundle }                         = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
 
 // ── Bundle cache ──────────────────────────────────────────────────────────
-// Bundle once per process lifetime. Subsequent renders reuse the bundle.
-// This is safe because the bundle contains ALL compositions — routing
-// happens at selectComposition time, not at bundle time.
+// Bundle once per process lifetime. All compositions live in the same bundle
+// so this is safe. Routing to the right composition happens at
+// selectComposition time, not at bundle time.
 let bundlePath = null;
 
 async function getBundle() {
@@ -24,7 +24,6 @@ async function getBundle() {
 
   console.log('[renderer] Bundling Remotion compositions — first render only...');
 
-  // ── Diagnostic: confirm assets exist in Docker image ──────────────────
   const assetsPath = path.resolve(__dirname, '../assets');
   console.log('[renderer] Assets check:', {
     assetsExists: fs.existsSync(assetsPath),
@@ -37,10 +36,9 @@ async function getBundle() {
   });
 
   bundlePath = await bundle({
-    entryPoint: path.resolve(__dirname, 'composition/index.jsx'),
+    entryPoint:      path.resolve(__dirname, 'composition/index.jsx'),
     webpackOverride: (config) => config,
-    // publicDir at repo root so /public/assets/bgm/... resolves correctly
-    publicDir: path.resolve(__dirname, '../'),
+    publicDir:       path.resolve(__dirname, '../'),
   });
 
   console.log('[renderer] Bundle complete:', bundlePath);
@@ -48,7 +46,6 @@ async function getBundle() {
 }
 
 // ── Composition routing ───────────────────────────────────────────────────
-// Returns the Remotion composition ID and canvas spec for a given scene_json.
 function getCompositionSpec(sceneJson) {
   if (sceneJson.render_type === 'CHART_SCENE') {
     return {
@@ -58,10 +55,6 @@ function getCompositionSpec(sceneJson) {
       fps:    sceneJson.fps    || 30,
     };
   }
-
-  // SceneComposer handles COMPOSITION, MOTION_GRAPHIC, and anything else.
-  // WF-MG injects width:1280, height:720 for motion graphics.
-  // WF-A / WF-B do not set width/height — fall back to 1408×768.
   return {
     id:     'SceneComposer',
     width:  sceneJson.width  || 1408,
@@ -75,9 +68,25 @@ async function renderScene(sceneJson) {
   const bp   = await getBundle();
   const spec = getCompositionSpec(sceneJson);
 
+  // ── WHY THE DURATION WAS ALWAYS 10 SECONDS ────────────────────────────
+  // The compositions in index.jsx have hardcoded durationInFrames values
+  // (e.g. ChartScene has durationInFrames={300} = 10s at 30fps).
+  // These are PREVIEW defaults for Remotion Studio only.
+  //
+  // selectComposition() returns that hardcoded value on the composition object.
+  // If you pass that object to renderMedia() unchanged, it uses the hardcoded
+  // 300 frames — ignoring duration_ms from scene_json completely.
+  //
+  // The fix requires TWO things:
+  //   1. Override durationInFrames ON the composition object (spread + override)
+  //   2. Pass durationInFrames as a top-level param to renderMedia
+  // Both are required. Doing only one still produces the wrong duration.
+  const durationInFrames = Math.ceil((sceneJson.duration_ms / 1000) * spec.fps);
+
   console.log(
     `[renderer] Scene ${sceneJson.scene_id} | Type: ${sceneJson.render_type} | ` +
-    `Composition: ${spec.id} | Canvas: ${spec.width}×${spec.height} @ ${spec.fps}fps`
+    `Composition: ${spec.id} | Canvas: ${spec.width}×${spec.height} @ ${spec.fps}fps | ` +
+    `Duration: ${sceneJson.duration_ms}ms = ${durationInFrames} frames`
   );
 
   const outPath = path.join(
@@ -85,6 +94,8 @@ async function renderScene(sceneJson) {
     `scene_${sceneJson.scene_id}_${Date.now()}.mp4`
   );
 
+  // selectComposition returns composition metadata from index.jsx.
+  // The durationInFrames here is the hardcoded preview default — ignore it.
   const composition = await selectComposition({
     serveUrl:   bp,
     id:         spec.id,
@@ -92,17 +103,20 @@ async function renderScene(sceneJson) {
   });
 
   await renderMedia({
-    composition,
-    serveUrl:       bp,
-    codec:          'h264',
+    // Override durationInFrames on the composition object.
+    // Remotion reads duration from here during rendering.
+    composition: {
+      ...composition,
+      durationInFrames,
+    },
+    serveUrl:   bp,
+    codec:      'h264',
     outputLocation: outPath,
-    inputProps:     { sceneJson },
-    // Calculate actual duration from scene_json — not the composition default.
-    // The composition default (300 frames) is only for Remotion Studio preview.
-    // Without this, every render is capped at 10 seconds regardless of content.
-    durationInFrames: Math.ceil((sceneJson.duration_ms / 1000) * spec.fps),
+    inputProps: { sceneJson },
+    // Also pass as top-level param — both are required.
+    durationInFrames,
     chromiumOptions: {
-      executablePath: process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
+      executablePath:     process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
       disableWebSecurity: true,
     },
     fps:    spec.fps,
