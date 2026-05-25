@@ -77,8 +77,8 @@ const CANVAS_H = 1920;
 //   CAPTION ZONE  — top 14% — large bold karaoke-style captions
 //   CHART ZONE    — next 78% — the entire candlestick chart
 //   FOOTER ZONE   — bottom 8% — brand watermark
-const CAPTION_H    = Math.round(CANVAS_H * 0.14);   // 269px
-const FOOTER_H     = Math.round(CANVAS_H * 0.08);   // 154px
+const CAPTION_H    = Math.round(CANVAS_H * 0.12);   // 230px — tighter caption zone
+const FOOTER_H     = Math.round(CANVAS_H * 0.05);   // 96px — smaller footer
 const CHART_Y      = CAPTION_H;                      // chart starts below caption
 const CHART_H      = CANVAS_H - CAPTION_H - FOOTER_H; // 1497px
 const CHART_X      = 32;                              // left padding
@@ -129,17 +129,9 @@ export const ChartScene = ({ sceneJson }) => {
   const bearishColor = chartConfig.bearish_color || '#ef5350'; // TradingView red
 
   // ── Transition calculations ───────────────────────────────────────────────
-  const transIn       = sceneJson.transition_in  || { type: 'fade', duration_ms: 300 };
-  const transOut      = sceneJson.transition_out || { type: 'fade', duration_ms: 300 };
-  const transInF      = Math.round((transIn.duration_ms  / 1000) * fps);
-  const transOutStart = durationInFrames - Math.round((transOut.duration_ms / 1000) * fps);
-
-  const opacity = interpolate(
-    frame,
-    [0, transInF, transOutStart, durationInFrames],
-    [transIn.type  === 'fade' ? 0 : 1, 1, 1, transOut.type === 'fade' ? 0 : 1],
-    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
-  );
+  // No fade in or fade out — instant cut on/off.
+  // The fade was causing dark grey background at start and end of every render.
+  const opacity = 1;
 
   // ── Overlays ──────────────────────────────────────────────────────────────
   // overlays array in scene_json defines every annotation that appears on
@@ -208,8 +200,8 @@ export const ChartScene = ({ sceneJson }) => {
         candle_interval_ms={candleIntervalMs}
         start_ms={chartConfig.start_ms || 0}
         visible_count={visibleCount}
-        candle_width={52}
-        candle_gap={12}
+        candle_width={36}
+        candle_gap={6}
         bullish_color={bullishColor}
         bearish_color={bearishColor}
         wick_color={bgKey === 'white' || bgKey === 'off_white' ? '#333333' : '#AAAAAA'}

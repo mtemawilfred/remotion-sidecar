@@ -83,9 +83,16 @@ export const LiveCandleChart = ({
   // ── How many candles have appeared so far ────────────────────────────────
   // candlesDone: number of fully completed candles
   // currentIdx:  index of the candle currently forming (or last candle)
-  const candlesDone    = Math.floor(localMs / candle_interval_ms);
-  const currentIdx     = Math.min(candlesDone, candles.length - 1);
-  const currentProgress = (localMs % candle_interval_ms) / candle_interval_ms;
+  const candlesDone = Math.floor(localMs / candle_interval_ms);
+  const currentIdx  = Math.min(candlesDone, candles.length - 1);
+
+  // Once all candles have finished drawing, lock progress to 1.
+  // Without this, the last candle reruns its grow animation repeatedly
+  // because localMs % candle_interval_ms keeps cycling after the chart is done.
+  const allDone        = candlesDone >= candles.length;
+  const currentProgress = allDone
+    ? 1
+    : (localMs % candle_interval_ms) / candle_interval_ms;
 
   // ── Price scaling ─────────────────────────────────────────────────────────
   // Use ALL candles for price range — not just visible ones.
@@ -170,7 +177,7 @@ export const LiveCandleChart = ({
           // Only render candles that have started appearing
           if (globalIdx > currentIdx) return null;
 
-          const isForming = globalIdx === currentIdx && currentIdx < candles.length;
+          const isForming = !allDone && globalIdx === currentIdx;
           const isBullish = candle.c >= candle.o;
           const progress  = isForming ? currentProgress : 1;
 
