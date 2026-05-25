@@ -173,7 +173,7 @@ export const ChartScene = ({ sceneJson }) => {
       <LiveCandleChart
         candles={candles}
         candle_interval_ms={candleIntervalMs}
-        start_ms={0}
+        start_ms={chartConfig.start_ms || 0}
         visible_count={visibleCount}
         candle_width={52}
         candle_gap={12}
