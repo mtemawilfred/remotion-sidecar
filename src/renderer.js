@@ -1,25 +1,30 @@
 // ── renderer.js ───────────────────────────────────────────────────────────
-// Bundles the Remotion composition and renders it to an MP4 buffer.
-// Called once per scene by server.js.
-// Uses a cached bundle path so bundling only happens once per process start.
+// Bundles the Remotion compositions and renders a scene_json to MP4.
+// Routes to the correct composition based on render_type:
+//   CHART_SCENE              → ChartScene  (1080×1920, 30fps, 9:16 vertical)
+//   COMPOSITION              → SceneComposer (1408×768, 24fps, 16:9)
+//   MOTION_GRAPHIC           → SceneComposer (1408×768, 24fps, 16:9)
+//   anything else            → SceneComposer (safe fallback)
 
 const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
 
-const { bundle }      = require('@remotion/bundler');
+const { bundle }                         = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
 
-// Cache the bundle path — only bundle once per process lifetime
+// ── Bundle cache ──────────────────────────────────────────────────────────
+// Bundle once per process lifetime. Subsequent renders reuse the bundle.
+// This is safe because the bundle contains ALL compositions — routing
+// happens at selectComposition time, not at bundle time.
 let bundlePath = null;
 
 async function getBundle() {
   if (bundlePath) return bundlePath;
 
-  console.log('[renderer] Bundling Remotion composition — first render only...');
+  console.log('[renderer] Bundling Remotion compositions — first render only...');
 
-  // ── Diagnostic: confirm assets exist in Docker image before bundling ──────
-  // Remove this block once assets are confirmed present in the image.
+  // ── Diagnostic: confirm assets exist in Docker image ──────────────────
   const assetsPath = path.resolve(__dirname, '../assets');
   console.log('[renderer] Assets check:', {
     assetsExists: fs.existsSync(assetsPath),
@@ -33,12 +38,8 @@ async function getBundle() {
 
   bundlePath = await bundle({
     entryPoint: path.resolve(__dirname, 'composition/index.jsx'),
-    // Webpack override: treat React as external so we don't bundle it twice
     webpackOverride: (config) => config,
-    // staticFile('assets/bgm/track.mp3') resolves to /public/assets/bgm/track.mp3
-    // publicDir is served at /public/ by the Remotion dev server (port 3001).
-    // Pointing to repo root (/app/) means assets/ is served at /public/assets/
-    // which matches exactly what Chrome requests during rendering.
+    // publicDir at repo root so /public/assets/bgm/... resolves correctly
     publicDir: path.resolve(__dirname, '../'),
   });
 
@@ -46,36 +47,50 @@ async function getBundle() {
   return bundlePath;
 }
 
+// ── Composition routing ───────────────────────────────────────────────────
+// Returns the Remotion composition ID and canvas spec for a given scene_json.
+function getCompositionSpec(sceneJson) {
+  if (sceneJson.render_type === 'CHART_SCENE') {
+    return {
+      id:     'ChartScene',
+      width:  sceneJson.width  || 1080,
+      height: sceneJson.height || 1920,
+      fps:    sceneJson.fps    || 30,
+    };
+  }
+
+  // SceneComposer handles COMPOSITION, MOTION_GRAPHIC, and anything else.
+  // WF-MG injects width:1280, height:720 for motion graphics.
+  // WF-A / WF-B do not set width/height — fall back to 1408×768.
+  return {
+    id:     'SceneComposer',
+    width:  sceneJson.width  || 1408,
+    height: sceneJson.height || 768,
+    fps:    sceneJson.fps    || 24,
+  };
+}
+
 // ── Main render function ───────────────────────────────────────────────────
 async function renderScene(sceneJson) {
-  const bp = await getBundle();
+  const bp   = await getBundle();
+  const spec = getCompositionSpec(sceneJson);
 
-  // Output to a temp file — we read it back as a buffer to return to n8n
+  console.log(
+    `[renderer] Scene ${sceneJson.scene_id} | Type: ${sceneJson.render_type} | ` +
+    `Composition: ${spec.id} | Canvas: ${spec.width}×${spec.height} @ ${spec.fps}fps`
+  );
+
   const outPath = path.join(
     os.tmpdir(),
     `scene_${sceneJson.scene_id}_${Date.now()}.mp4`
   );
 
-  // Select the composition — we have one composition: SceneComposer
   const composition = await selectComposition({
     serveUrl:   bp,
-    id:         'SceneComposer',
+    id:         spec.id,
     inputProps: { sceneJson },
   });
 
-  // ── Canvas size ────────────────────────────────────────────────────────────
-  // Read width and height from scene_json so each workflow can specify its own
-  // canvas without changing this file.
-  //
-  // WF-MG (Motion Graphic Studio) injects width: 1280, height: 720 (720p HD).
-  // WF-A / WF-B do not send width/height — they fall back to 1408×768
-  // which is their confirmed working spec. No breakage to existing workflows.
-  const renderWidth  = sceneJson.width  || 1408;
-  const renderHeight = sceneJson.height || 768;
-
-  console.log(`[renderer] Canvas: ${renderWidth}×${renderHeight}`);
-
-  // Render to MP4
   await renderMedia({
     composition,
     serveUrl:       bp,
@@ -83,25 +98,23 @@ async function renderScene(sceneJson) {
     outputLocation: outPath,
     inputProps:     { sceneJson },
     chromiumOptions: {
-      // Use system Chromium installed in Dockerfile
       executablePath: process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
-      // Required for running in Docker without a real display
       disableWebSecurity: true,
     },
-    fps:    24,
-    width:  renderWidth,
-    height: renderHeight,
-    // Suppress verbose Remotion logs in production
+    fps:    spec.fps,
+    width:  spec.width,
+    height: spec.height,
     onProgress: ({ progress }) => {
-      if (Math.round(progress * 100) % 25 === 0) {
-        console.log(`[renderer] Scene ${sceneJson.scene_id}: ${Math.round(progress * 100)}%`);
+      const pct = Math.round(progress * 100);
+      if (pct % 25 === 0) {
+        console.log(`[renderer] Scene ${sceneJson.scene_id} (${spec.id}): ${pct}%`);
       }
     },
   });
 
-  // Read the output file into a buffer and delete the temp file
   const buffer = fs.readFileSync(outPath);
   fs.unlinkSync(outPath);
+  console.log(`[renderer] Scene ${sceneJson.scene_id} complete — ${buffer.length} bytes`);
   return buffer;
 }
 
