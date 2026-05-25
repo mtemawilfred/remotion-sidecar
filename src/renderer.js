@@ -97,6 +97,10 @@ async function renderScene(sceneJson) {
     codec:          'h264',
     outputLocation: outPath,
     inputProps:     { sceneJson },
+    // Calculate actual duration from scene_json — not the composition default.
+    // The composition default (300 frames) is only for Remotion Studio preview.
+    // Without this, every render is capped at 10 seconds regardless of content.
+    durationInFrames: Math.ceil((sceneJson.duration_ms / 1000) * spec.fps),
     chromiumOptions: {
       executablePath: process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
       disableWebSecurity: true,
