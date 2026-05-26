@@ -356,17 +356,31 @@ function ChartOverlay({
       const w    = (x2 - x1) * expandProg;
       const topY = Math.min(y1, y2);
       const h    = Math.abs(y2 - y1);
+      const labelText = overlay.label || 'SUPPLY';
+      const pillW = labelText.length * 11 + 20;
+      const pillH = 26;
       return (
-        <g opacity={fadeProg * 0.9}>
-          <rect x={x1} y={topY} width={w} height={h} fill="rgba(200,60,60,0.18)" />
-          <line x1={x1} y1={topY}   x2={x1+w} y2={topY}   stroke="rgba(220,80,80,0.8)" strokeWidth={1.5} />
-          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(220,80,80,0.6)" strokeWidth={1} strokeDasharray="4 3" />
-          {overlay.label && expandProg > 0.5 && (
-            <text x={x1+6} y={topY+14} fill="rgba(220,80,80,0.95)"
-              fontSize={18} fontFamily="Arial" fontWeight="bold" opacity={fadeProg}>
-              {overlay.label}
-            </text>
-          )}
+        <g opacity={fadeProg}>
+          {/* Zone fill — higher opacity so it reads over candles */}
+          <rect x={x1} y={topY} width={w} height={h} fill="rgba(200,60,60,0.28)" />
+          {/* Top border — solid, thick */}
+          <line x1={x1} y1={topY}   x2={x1+w} y2={topY}   stroke="rgba(210,60,60,1.0)" strokeWidth={2.5} />
+          {/* Bottom border — dashed */}
+          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(210,60,60,0.8)" strokeWidth={1.5} strokeDasharray="5 3" />
+          {/* Pill label — clamped inside canvas */}
+          {expandProg > 0.4 && (() => {
+            const px = Math.min(x1 + 8, chartX + chartW - pillW - 8);
+            return (
+              <>
+                <rect x={px} y={topY+8} width={pillW} height={pillH}
+                  fill="rgba(200,60,60,0.92)" rx={4} />
+                <text x={px+10} y={topY+25} fill="#FFFFFF"
+                  fontSize={17} fontFamily="Arial" fontWeight="bold">
+                  {labelText}
+                </text>
+              </>
+            );
+          })()}
         </g>
       );
     }
@@ -380,42 +394,77 @@ function ChartOverlay({
       const w    = (x2 - x1) * expandProg;
       const topY = Math.min(y1, y2);
       const h    = Math.abs(y2 - y1);
+      const labelText = overlay.label || 'DEMAND';
+      const pillW = labelText.length * 11 + 20;
+      const pillH = 26;
       return (
-        <g opacity={fadeProg * 0.9}>
-          <rect x={x1} y={topY} width={w} height={h} fill="rgba(60,100,220,0.18)" />
-          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(80,120,230,0.8)" strokeWidth={1.5} />
-          <line x1={x1} y1={topY}   x2={x1+w} y2={topY}   stroke="rgba(80,120,230,0.6)" strokeWidth={1} strokeDasharray="4 3" />
-          {overlay.label && expandProg > 0.5 && (
-            <text x={x1+6} y={topY+h-6} fill="rgba(80,120,230,0.95)"
-              fontSize={18} fontFamily="Arial" fontWeight="bold" opacity={fadeProg}>
-              {overlay.label}
-            </text>
-          )}
+        <g opacity={fadeProg}>
+          {/* Zone fill — higher opacity */}
+          <rect x={x1} y={topY} width={w} height={h} fill="rgba(60,100,220,0.28)" />
+          {/* Bottom border — solid, thick (demand zones anchor from bottom) */}
+          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke="rgba(60,100,220,1.0)" strokeWidth={2.5} />
+          {/* Top border — dashed */}
+          <line x1={x1} y1={topY}   x2={x1+w} y2={topY}   stroke="rgba(60,100,220,0.8)" strokeWidth={1.5} strokeDasharray="5 3" />
+          {/* Pill label — clamped inside canvas */}
+          {expandProg > 0.4 && (() => {
+            const px = Math.min(x1 + 8, chartX + chartW - pillW - 8);
+            return (
+              <>
+                <rect x={px} y={topY+h-pillH-8} width={pillW} height={pillH}
+                  fill="rgba(60,100,220,0.92)" rx={4} />
+                <text x={px+10} y={topY+h-14} fill="#FFFFFF"
+                  fontSize={17} fontFamily="Arial" fontWeight="bold">
+                  {labelText}
+                </text>
+              </>
+            );
+          })()}
         </g>
       );
     }
 
     // ── ORDER BLOCK ─────────────────────────────────────────────────────────
     case 'order_block': {
-      const idx  = overlay.candle_index;
-      const x1   = idx != null ? candleLeft(idx)  : chartX + (overlay.x_start_pct ?? 0) * chartW;
-      const x2   = idx != null ? candleRight(idx) : chartX + (overlay.x_end_pct   ?? 0.1) * chartW;
-      const y1   = resolveY(overlay.price_top,    overlay.y_top_pct);
-      const y2   = resolveY(overlay.price_bottom, overlay.y_bottom_pct);
-      const topY = Math.min(y1, y2);
-      const h    = Math.abs(y2 - y1);
-      const color = overlay.direction === 'bearish' ? 'rgba(220,80,80,0.9)' : 'rgba(80,120,230,0.9)';
-      const fill  = overlay.direction === 'bearish' ? 'rgba(220,80,80,0.12)' : 'rgba(80,120,230,0.12)';
+      const idx   = overlay.candle_index;
+      const x1    = idx != null ? candleLeft(idx)  : chartX + (overlay.x_start_pct ?? 0) * chartW;
+      const x2    = chartX + chartW; // OB zone extends to right edge like demand/supply
+      const y1    = resolveY(overlay.price_top,    overlay.y_top_pct);
+      const y2    = resolveY(overlay.price_bottom, overlay.y_bottom_pct);
+      const topY  = Math.min(y1, y2);
+      const h     = Math.abs(y2 - y1);
+      const w     = (x2 - x1) * expandProg;
+      const isBearishCandle = overlay.direction === 'bearish';
+      const fillColor  = isBearishCandle ? 'rgba(220,80,80,0.25)'  : 'rgba(60,100,220,0.25)';
+      const lineColor  = isBearishCandle ? 'rgba(210,60,60,1.0)'   : 'rgba(60,100,220,1.0)';
+      const pillColor  = isBearishCandle ? 'rgba(200,60,60,0.92)'  : 'rgba(60,100,220,0.92)';
+      const labelText  = overlay.label || 'ORDER BLOCK';
+      const pillW      = labelText.length * 11 + 20;
+      const pillH      = 26;
+      // Solid border on the candle-side edge (left), dashed on right extension
+      const candleX2   = idx != null ? candleRight(idx) : x1 + 40;
       return (
         <g opacity={fadeProg}>
-          <rect x={x1} y={topY} width={x2-x1} height={h}
-            fill={fill} stroke={color} strokeWidth={2} rx={2} />
-          {overlay.label && (
-            <text x={x1+3} y={topY-5} fill={color}
-              fontSize={16} fontFamily="Arial" fontWeight="bold">
-              {overlay.label}
-            </text>
-          )}
+          <rect x={x1} y={topY} width={w} height={h} fill={fillColor} />
+          {/* Left edge — solid vertical line marking the OB candle */}
+          <line x1={x1} y1={topY} x2={x1} y2={topY+h} stroke={lineColor} strokeWidth={3} />
+          {/* Top border */}
+          <line x1={x1} y1={topY} x2={x1+w} y2={topY} stroke={lineColor} strokeWidth={2} />
+          {/* Bottom border */}
+          <line x1={x1} y1={topY+h} x2={x1+w} y2={topY+h} stroke={lineColor} strokeWidth={2} strokeDasharray="5 3" />
+          {/* Pill label — clamped inside canvas */}
+          {expandProg > 0.3 && (() => {
+            const px = Math.min(x1 + 8, chartX + chartW - pillW - 8);
+            return (
+              <>
+                <rect x={px} y={topY+8} width={pillW} height={pillH}
+                  fill={pillColor} rx={4} />
+                <text x={px+10} y={topY+25} fill="#FFFFFF"
+                  fontSize={17} fontFamily="Arial" fontWeight="bold">
+                  {labelText}
+                </text>
+              </>
+            );
+          })()}
         </g>
       );
     }
@@ -516,11 +565,14 @@ function ChartOverlay({
     }
 
     // ── LIQUIDITY LEVEL ───────────────────────────────────────────────────────
-    // CHANGED FROM v1: swept state now has a distinct visual.
-    //   swept: false → grey dashed line + grey label (liquidity is still intact)
-    //   swept: true  → red line + red "SWEPT ✓" marker (liquidity has been taken)
-    // This makes the teaching moment visible — the viewer sees the line change
-    // colour at the exact moment the sweep happens, not just a tiny text word.
+    // Horizontal dashed line at equal highs/lows.
+    // CHANGED: label replaced with a tailless arrow (filled chevron ▶ / ◀)
+    // pointing AT the price level from the left — no text tail, just the arrow.
+    // This matches the reference video style where a clean arrow points to the
+    // liquidity pool without cluttering the chart with text over candles.
+    //
+    // swept: false → grey dashed line + grey chevron
+    // swept: true  → red line + red chevron + "SWEPT ✓" pill
     case 'liquidity': {
       const y  = resolveY(overlay.price_level, overlay.y_pct);
       const x1 = resolveXLeft(overlay.candle_start, overlay.x_start_pct ?? 0);
@@ -529,132 +581,164 @@ function ChartOverlay({
         : chartX + (overlay.x_end_pct ?? 0.7) * chartW;
       const w  = (x2 - x1) * expandProg;
 
-      // Colours change based on swept state
-      const lineColor  = overlay.swept ? 'rgba(220,80,80,0.85)' : 'rgba(100,100,100,0.70)';
-      const labelColor = overlay.swept ? 'rgba(220,80,80,0.95)' : 'rgba(80,80,80,0.90)';
-      const labelText  = overlay.swept
-        ? 'SWEPT ✓'
-        : (overlay.label || 'LIQUIDITY');
+      const isSwept    = overlay.swept;
+      const lineColor  = isSwept ? 'rgba(220,60,60,0.90)' : 'rgba(80,80,80,0.75)';
+      const arrowColor = isSwept ? 'rgba(220,60,60,1.0)'  : 'rgba(80,80,80,0.90)';
+
+      // Tailless arrow (chevron) — points RIGHT toward the liquidity level
+      // Sits just to the LEFT of the line start, pointing at the price
+      const arrowSize = 14;
+      const ax = x1 - 4; // tip of arrow touches the line start
+      // Chevron points right: tip at (ax, y), body at (ax-arrowSize, y±arrowSize*0.6)
+      const arrowPoints = `${ax},${y} ${ax-arrowSize},${y-arrowSize*0.6} ${ax-arrowSize},${y+arrowSize*0.6}`;
+
+      // Label text for the pill (shown outside candle area at left)
+      const labelText = overlay.label || 'LIQUIDITY';
 
       return (
         <g opacity={fadeProg}>
-          {/* The horizontal dotted line */}
+          {/* Dashed horizontal line */}
           <line
             x1={x1} y1={y} x2={x1+w} y2={y}
             stroke={lineColor}
-            strokeWidth={overlay.swept ? 2 : 1.5}
-            strokeDasharray="6 4"
+            strokeWidth={isSwept ? 2.5 : 1.8}
+            strokeDasharray="7 4"
           />
-          {/* Label sits above the line */}
-          {expandProg > 0.5 && (
-            <text
-              x={x1+4} y={y-6}
-              fill={labelColor}
-              fontSize={16} fontFamily="Arial" fontWeight="bold"
-              opacity={fadeProg}
-            >
-              {labelText}
-            </text>
-          )}
-          {/* When swept: add a small circle marker at the right end of the line
-              to mark the exact point where the sweep happened */}
-          {overlay.swept && expandProg > 0.8 && (
-            <circle
-              cx={x1+w} cy={y} r={6}
-              fill="rgba(220,80,80,0.9)"
-              opacity={fadeProg}
+          {/* Tailless arrow chevron pointing at the level */}
+          {expandProg > 0.2 && (
+            <polygon
+              points={arrowPoints}
+              fill={arrowColor}
             />
+          )}
+          {/* Label pill — sits ABOVE the line, anchored to x1, clamped inside canvas */}
+          {expandProg > 0.4 && (() => {
+            const pw = labelText.length * 10 + 16;
+            const ph = 22;
+            // Clamp so pill never goes left of chartX or right of chartX+chartW
+            const px = Math.max(chartX, Math.min(x1, chartX + chartW - pw));
+            const py = y - ph - 4;
+            return (
+              <>
+                <rect x={px} y={py} width={pw} height={ph}
+                  fill={isSwept ? 'rgba(220,60,60,0.85)' : 'rgba(60,60,60,0.80)'}
+                  rx={4} />
+                <text x={px + 8} y={py + ph - 5} fill="#FFFFFF"
+                  fontSize={15} fontFamily="Arial" fontWeight="bold">
+                  {labelText}
+                </text>
+              </>
+            );
+          })()}
+          {/* When swept: red circle at right end + SWEPT pill */}
+          {isSwept && expandProg > 0.8 && (
+            <>
+              <circle cx={x1+w} cy={y} r={7} fill="rgba(220,60,60,0.95)" />
+              <rect x={x1+w+12} y={y-13} width={80} height={22} fill="rgba(220,60,60,0.92)" rx={4} />
+              <text x={x1+w+20} y={y+3} fill="#FFFFFF" fontSize={15} fontFamily="Arial" fontWeight="bold">SWEPT ✓</text>
+            </>
           )}
         </g>
       );
     }
 
     // ── BOS LABEL ────────────────────────────────────────────────────────────
-    // CHANGED FROM v2: BOS line now draws FROM the structural high candle
-    // TO the BOS candle, sitting at price_level (the structural high price).
-    //
-    // This is how the BOS is taught in the PipsGravity Academy:
-    //   - The line starts at the candle that FORMED the structural high (left)
-    //   - The line ends at the candle that BROKE through it (right)
-    //   - The line sits at the price_level of the structural high
-    //   - The viewer sees: "here was the barrier — this candle broke it"
-    //
-    // Required overlay fields:
-    //   candle_start: index of structural high candle (left anchor)
-    //   candle_index: index of BOS candle (right anchor)
-    //   price_level:  candles[candle_start].h — the barrier price
-    //   label:        dynamic — "BOS CONFIRMED", "STEP 2: BOS ✓" etc.
-    //
-    // Backward compat: if candle_start is missing, falls back to old behaviour
-    // (line draws from BOS candle rightward) so existing renders don't break.
+    // Line draws FROM structural high candle TO BOS candle at price_level.
+    // CHANGES from v2:
+    //   - Label moves to CENTER of the line (midpoint between anchors)
+    //   - Uptrend context: ascending dotted line drawn in the 3 candles BEFORE
+    //     the structural high, showing the trend that formed the swing high
+    //   - Line stops exactly at the BOS candle right edge — never extends further
+    //   - Backward compat: if candle_start missing, falls back to old style
     case 'bos_label': {
-      const cy = resolveY(overlay.price_level, overlay.y_pct);
-
-      // Label sits above the line for upward BOS, below for downward BOS
-      const textY     = overlay.direction === 'up' ? cy - 14 : cy + 26;
+      const cy        = resolveY(overlay.price_level, overlay.y_pct);
       const labelText = overlay.label || 'BOS';
-
-      // NEW: line draws from structural high candle (left) to BOS candle (right)
-      // If candle_start is provided, use it as left anchor.
-      // If not, fall back to old behaviour (BOS candle to right edge).
       const hasLeftAnchor = overlay.candle_start !== undefined && overlay.candle_start !== null;
 
       if (hasLeftAnchor) {
-        // ── New behaviour: structural high → BOS candle ──────────────────
+        // ── New behaviour: structural high candle → BOS candle ────────────
         const xLeft  = candleToX(overlay.candle_start);
-        const xRight = resolveXCenter(overlay.candle_index, overlay.x_pct);
+        const xRight = candleRight(overlay.candle_index);        // stops AT BOS candle right edge
+        const lineLen = xRight - xLeft;
+        const lineEnd = xLeft + lineLen * expandProg;
 
-        // Line extends from left anchor to right anchor, animated left to right
-        const lineEnd = xLeft + (xRight - xLeft) * expandProg;
+        // Label at CENTER of the line — appears when line is 50% drawn
+        const midX  = xLeft + lineLen * 0.5;
+        // Label pill dimensions
+        const pillW = labelText.length * 12 + 20;
+        const pillH = 28;
+        const pillX = midX - pillW / 2;
+        // Sits above line for upward BOS, below for downward BOS
+        const pillY = overlay.direction === 'up' ? cy - pillH - 6 : cy + 6;
+
+        // Uptrend context: ascending dotted line in the 3 candles BEFORE
+        // the structural high candle, showing price was rising to that peak.
+        // Draws from 3 candles left of candle_start rising up to price_level.
+        const trendStartIdx = Math.max(0, overlay.candle_start - 3);
+        const trendX1 = candleToX(trendStartIdx);
+        const trendY1 = cy + 40; // starts 40px below the high (coming from below)
+        const trendX2 = xLeft;
+        const trendY2 = cy;      // arrives at the structural high level
 
         return (
           <g opacity={fadeProg}>
-            {/* Horizontal dashed line: structural high candle to BOS candle */}
-            <line
-              x1={xLeft} y1={cy} x2={lineEnd} y2={cy}
-              stroke="rgba(80,80,80,0.75)"
-              strokeWidth={1.5}
-              strokeDasharray="6 4"
-            />
-            {/* Small circle at left anchor marking the structural high */}
-            {expandProg > 0.1 && (
-              <circle
-                cx={xLeft} cy={cy} r={4}
-                fill="none"
-                stroke="rgba(80,80,80,0.75)"
+            {/* Uptrend context line — shows the trend that formed the swing high */}
+            {expandProg > 0.05 && (
+              <line
+                x1={trendX1} y1={trendY1} x2={trendX2} y2={trendY2}
+                stroke="rgba(38,166,154,0.6)"
                 strokeWidth={1.5}
+                strokeDasharray="4 3"
               />
             )}
-            {/* BOS label appears near the right end once line is 70% drawn */}
-            {expandProg > 0.7 && (
-              <text
-                x={lineEnd + 6} y={textY}
-                fill="rgba(50,50,50,0.95)"
-                fontSize={20} fontFamily="Arial" fontWeight="bold"
-              >
-                {labelText}
-              </text>
+            {/* Small triangle at the structural high marking the swing peak */}
+            {expandProg > 0.1 && overlay.direction === 'up' && (
+              <polygon
+                points={`${xLeft},${cy} ${xLeft-6},${cy-12} ${xLeft+6},${cy-12}`}
+                fill="rgba(80,80,80,0.85)"
+              />
             )}
+            {/* Horizontal dashed BOS line: structural high → BOS candle */}
+            <line
+              x1={xLeft} y1={cy} x2={lineEnd} y2={cy}
+              stroke="rgba(60,60,60,0.85)"
+              strokeWidth={2}
+              strokeDasharray="7 4"
+            />
+            {/* BOS label pill at CENTER of line — clamped inside canvas */}
+            {expandProg > 0.5 && (() => {
+              const clampedX = Math.max(chartX, Math.min(pillX, chartX + chartW - pillW));
+              const clampedY = Math.max(CHART_Y + 4, Math.min(pillY, CHART_Y + CHART_H - pillH - 4));
+              return (
+                <>
+                  <rect x={clampedX} y={clampedY} width={pillW} height={pillH}
+                    fill="rgba(40,40,40,0.88)" rx={5} />
+                  <text
+                    x={clampedX + pillW/2} y={clampedY + pillH*0.68}
+                    fill="#FFFFFF"
+                    fontSize={18} fontFamily="Arial" fontWeight="bold"
+                    textAnchor="middle"
+                  >
+                    {labelText}
+                  </text>
+                </>
+              );
+            })()}
           </g>
         );
       } else {
-        // ── Backward compat: old behaviour (BOS candle → right edge) ─────
+        // ── Backward compat: BOS candle → right edge ──────────────────────
         const cx      = resolveXCenter(overlay.candle_index, overlay.x_pct);
         const lineEnd = cx + (chartX + chartW - cx) * expandProg;
+        const textY   = overlay.direction === 'up' ? cy - 14 : cy + 26;
         return (
           <g opacity={fadeProg}>
-            <line
-              x1={cx} y1={cy} x2={lineEnd} y2={cy}
-              stroke="rgba(100,100,100,0.6)"
-              strokeWidth={1.5}
-              strokeDasharray="6 4"
-            />
+            <line x1={cx} y1={cy} x2={lineEnd} y2={cy}
+              stroke="rgba(100,100,100,0.7)" strokeWidth={2} strokeDasharray="7 4" />
             {expandProg > 0.3 && (
-              <text
-                x={cx+6} y={textY}
-                fill="rgba(50,50,50,0.9)"
-                fontSize={20} fontFamily="Arial" fontWeight="bold"
-              >
+              <text x={cx + (lineEnd-cx)*0.5} y={textY}
+                fill="rgba(40,40,40,0.9)" fontSize={18} fontFamily="Arial"
+                fontWeight="bold" textAnchor="middle">
                 {labelText}
               </text>
             )}
@@ -697,6 +781,22 @@ function CandleLabel({
   const isLight   = bgKey === 'white' || bgKey === 'off_white';
   const textColor = isLight ? '#111111' : '#FFFFFF';
 
+  // Clamp text position so it never exits the canvas horizontally
+  const estTextW = (overlay.text || '').length * 17; // rough char width at 28px
+  let labelLeft, labelRight;
+  if (overlay.side === 'right') {
+    // Starts at px+54, clamp so right edge <= CANVAS_W - 8
+    labelLeft = Math.min(px + 54, CANVAS_W - estTextW - 8);
+    labelLeft = Math.max(8, labelLeft);
+    labelRight = undefined;
+  } else {
+    // Ends at px-54, clamp so left edge >= 8
+    const naturalRight = CANVAS_W - px + 54;
+    labelRight = Math.min(naturalRight, CANVAS_W - 8);
+    labelRight = Math.max(8, labelRight);
+    labelLeft = undefined;
+  }
+
   return (
     <AbsoluteFill
       style={{ pointerEvents: 'none', opacity, transform: `translateX(${slideX}px)` }}
@@ -712,14 +812,15 @@ function CandleLabel({
       <div
         style={{
           position:   'absolute',
-          top:        py - 14,
-          left:       overlay.side === 'right' ? px + 54 : undefined,
-          right:      overlay.side === 'left'  ? CANVAS_W - px + 54 : undefined,
+          top:        Math.max(CHART_Y + 4, Math.min(py - 14, CHART_Y + CHART_H - 32)),
+          left:       labelLeft,
+          right:      labelRight,
           fontFamily: brand.font_body,
           fontSize:   28,
           fontWeight: 700,
           color:      overlay.color || textColor,
           whiteSpace: 'nowrap',
+          maxWidth:   CANVAS_W - 16,
         }}
       >
         {overlay.text}
@@ -758,13 +859,18 @@ function ChartFloatingLabel({
     : isSell ? '#ef5350'
     : brand.accent;
 
+  // Estimate pill width and clamp so it never exits right or left edge
+  const estPillW = text.length * 16 + 28;
+  const clampedLeft = Math.max(8, Math.min(px + 8, CANVAS_W - estPillW - 8));
+  const clampedTop  = Math.max(CHART_Y + 4, Math.min(py - 22, CHART_Y + CHART_H - 44));
+
   return (
     <AbsoluteFill style={{ pointerEvents: 'none', opacity }}>
       <div
         style={{
           position:        'absolute',
-          top:             py - 22,
-          left:            px + 8,
+          top:             clampedTop,
+          left:            clampedLeft,
           transform:       `scale(${scale})`,
           transformOrigin: 'left center',
           backgroundColor: bgColor,
@@ -776,6 +882,7 @@ function ChartFloatingLabel({
           borderRadius:    6,
           whiteSpace:      'nowrap',
           letterSpacing:   0.5,
+          maxWidth:        CANVAS_W - 16,
         }}
       >
         {text}
