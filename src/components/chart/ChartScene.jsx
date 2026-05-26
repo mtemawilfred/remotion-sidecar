@@ -570,46 +570,97 @@ function ChartOverlay({
     }
 
     // ── BOS LABEL ────────────────────────────────────────────────────────────
-    // CHANGED FROM v1: hardcoded "BOS" string replaced with overlay.label.
-    // This allows any label the teaching sequence requires:
-    //   "BOS"              — standalone BOS concept video
-    //   "STEP 1: BOS ✓"   — BOS as first evidence in a multi-step concept
-    //   "STEP 2: BOS ✓"   — BOS as second evidence
-    //   "STEP 3: BOS ✓"   — BOS as third evidence
-    //   "BOS CONFIRMED"    — emphasis variant
-    // Claude decides the label text. The renderer renders whatever it receives.
+    // CHANGED FROM v2: BOS line now draws FROM the structural high candle
+    // TO the BOS candle, sitting at price_level (the structural high price).
+    //
+    // This is how the BOS is taught in the PipsGravity Academy:
+    //   - The line starts at the candle that FORMED the structural high (left)
+    //   - The line ends at the candle that BROKE through it (right)
+    //   - The line sits at the price_level of the structural high
+    //   - The viewer sees: "here was the barrier — this candle broke it"
+    //
+    // Required overlay fields:
+    //   candle_start: index of structural high candle (left anchor)
+    //   candle_index: index of BOS candle (right anchor)
+    //   price_level:  candles[candle_start].h — the barrier price
+    //   label:        dynamic — "BOS CONFIRMED", "STEP 2: BOS ✓" etc.
+    //
+    // Backward compat: if candle_start is missing, falls back to old behaviour
+    // (line draws from BOS candle rightward) so existing renders don't break.
     case 'bos_label': {
-      const cx      = resolveXCenter(overlay.candle_index, overlay.x_pct);
-      const cy      = resolveY(overlay.price_level, overlay.y_pct);
-      const lineEnd = cx + (chartX + chartW - cx) * expandProg;
+      const cy = resolveY(overlay.price_level, overlay.y_pct);
 
       // Label sits above the line for upward BOS, below for downward BOS
-      const textY = overlay.direction === 'up' ? cy - 14 : cy + 26;
-
-      // Use whatever label Claude generated — fall back to 'BOS' if missing
+      const textY     = overlay.direction === 'up' ? cy - 14 : cy + 26;
       const labelText = overlay.label || 'BOS';
 
-      return (
-        <g opacity={fadeProg}>
-          {/* Horizontal dashed line from candle to right edge */}
-          <line
-            x1={cx} y1={cy} x2={lineEnd} y2={cy}
-            stroke="rgba(100,100,100,0.6)"
-            strokeWidth={1.5}
-            strokeDasharray="6 4"
-          />
-          {/* Dynamic label — appears after line is 30% drawn */}
-          {expandProg > 0.3 && (
-            <text
-              x={cx+6} y={textY}
-              fill="rgba(50,50,50,0.9)"
-              fontSize={20} fontFamily="Arial" fontWeight="bold"
-            >
-              {labelText}
-            </text>
-          )}
-        </g>
-      );
+      // NEW: line draws from structural high candle (left) to BOS candle (right)
+      // If candle_start is provided, use it as left anchor.
+      // If not, fall back to old behaviour (BOS candle to right edge).
+      const hasLeftAnchor = overlay.candle_start !== undefined && overlay.candle_start !== null;
+
+      if (hasLeftAnchor) {
+        // ── New behaviour: structural high → BOS candle ──────────────────
+        const xLeft  = candleToX(overlay.candle_start);
+        const xRight = resolveXCenter(overlay.candle_index, overlay.x_pct);
+
+        // Line extends from left anchor to right anchor, animated left to right
+        const lineEnd = xLeft + (xRight - xLeft) * expandProg;
+
+        return (
+          <g opacity={fadeProg}>
+            {/* Horizontal dashed line: structural high candle to BOS candle */}
+            <line
+              x1={xLeft} y1={cy} x2={lineEnd} y2={cy}
+              stroke="rgba(80,80,80,0.75)"
+              strokeWidth={1.5}
+              strokeDasharray="6 4"
+            />
+            {/* Small circle at left anchor marking the structural high */}
+            {expandProg > 0.1 && (
+              <circle
+                cx={xLeft} cy={cy} r={4}
+                fill="none"
+                stroke="rgba(80,80,80,0.75)"
+                strokeWidth={1.5}
+              />
+            )}
+            {/* BOS label appears near the right end once line is 70% drawn */}
+            {expandProg > 0.7 && (
+              <text
+                x={lineEnd + 6} y={textY}
+                fill="rgba(50,50,50,0.95)"
+                fontSize={20} fontFamily="Arial" fontWeight="bold"
+              >
+                {labelText}
+              </text>
+            )}
+          </g>
+        );
+      } else {
+        // ── Backward compat: old behaviour (BOS candle → right edge) ─────
+        const cx      = resolveXCenter(overlay.candle_index, overlay.x_pct);
+        const lineEnd = cx + (chartX + chartW - cx) * expandProg;
+        return (
+          <g opacity={fadeProg}>
+            <line
+              x1={cx} y1={cy} x2={lineEnd} y2={cy}
+              stroke="rgba(100,100,100,0.6)"
+              strokeWidth={1.5}
+              strokeDasharray="6 4"
+            />
+            {expandProg > 0.3 && (
+              <text
+                x={cx+6} y={textY}
+                fill="rgba(50,50,50,0.9)"
+                fontSize={20} fontFamily="Arial" fontWeight="bold"
+              >
+                {labelText}
+              </text>
+            )}
+          </g>
+        );
+      }
     }
 
     // candle_label and floating_label handled as HTML above — return null here
