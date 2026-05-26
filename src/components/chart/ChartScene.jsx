@@ -812,7 +812,7 @@ function CandleLabel({
       <div
         style={{
           position:   'absolute',
-          top:        Math.max(CHART_Y + 4, Math.min(py - 14, CHART_Y + CHART_H - 32)),
+          top:        Math.max(CHART_Y + 4, Math.min(py - 14, CHART_Y + CHART_H - 60)),
           left:       labelLeft,
           right:      labelRight,
           fontFamily: brand.font_body,
@@ -821,9 +821,13 @@ function CandleLabel({
           color:      overlay.color || textColor,
           whiteSpace: 'nowrap',
           maxWidth:   CANVAS_W - 16,
+          lineHeight: 1.3,
         }}
       >
-        {overlay.text}
+        {/* Split on \n so multi-line text renders correctly */}
+        {(overlay.text || '').split('\n').map((line, li) => (
+          <div key={li}>{line}</div>
+        ))}
       </div>
     </AbsoluteFill>
   );
