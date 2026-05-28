@@ -47,7 +47,6 @@
 // }
 //
 // REMOVED IN v2:
-//   - stt_timestamps: no longer generated or consumed
 //   - ChartCaption: word-by-word karaoke replaced by HookText static title
 //   - bos_label hardcoded "BOS" string: now reads overlay.label dynamically
 
@@ -238,7 +237,6 @@ export const ChartScene = ({ sceneJson }) => {
           CHANGED FROM v1: ChartCaption (word-by-word karaoke) is gone.
           HookText renders sceneJson.hook_text as a single static line
           in the top 12% of the frame. Visible for the entire video.
-          No timing logic. No stt_timestamps. */}
       <HookText
         hookText={sceneJson.hook_text || ''}
         brand={brand}
@@ -900,7 +898,6 @@ function ChartFloatingLabel({
 //
 // Renders sceneJson.hook_text as a single static line in the top 12% of
 // the frame. Visible for the entire video from frame 0.
-// No timing logic. No word-by-word animation. No stt_timestamps.
 //
 // The text fades in over the first 0.5 seconds so it does not feel abrupt.
 // Font: brand.font_heading (Oswald) — uppercase, bold, large.
