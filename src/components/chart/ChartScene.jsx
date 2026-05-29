@@ -549,7 +549,7 @@ function ChartOverlay({
           )}
           {/* R:R label — positioned to the LEFT of the chart area so it
               never covers candles. Large pill with high contrast. */}
-          {fadeProg > 0.3 && overlay.rr_ratio && (() => {
+          {entryP > 0.6 && overlay.rr_ratio && (() => {
             const rrText    = overlay.rr_ratio;
             const rrPillW   = rrText.length * 18 + 28;  // scales with text length
             const rrPillH   = 40;
@@ -703,9 +703,9 @@ function ChartOverlay({
 
       if (hasLeftAnchor) {
         // ── New behaviour: structural high candle → BOS candle ────────────
-        const xLeft  = candleLeft(overlay.candle_start);   // start from LEFT edge of structural high candle
-        const xRight = candleRight(overlay.candle_index);  // stop at RIGHT edge of BOS candle — no further
-        const lineLen = Math.max(0, xRight - xLeft);       // guard against negative if candles overlap
+        const xLeft  = candleToX(overlay.candle_start);    // center of structural high candle (left anchor)
+        const xRight = candleToX(overlay.candle_index);    // center of BOS candle (right anchor — stops here)
+        const lineLen = Math.max(0, xRight - xLeft);
         const lineEnd = xLeft + lineLen * expandProg;
 
         // Label at CENTER of the line — appears when line is 50% drawn
