@@ -535,29 +535,77 @@ function ChartOverlay({
             <text x={x2+4} y={tpY+4} fill={green}
               fontSize={16} fontFamily="Arial" fontWeight="bold">TP</text>
           )}
-          {/* Risk zone */}
+          {/* Risk zone — very low opacity so candles remain readable */}
           {zoneP > 0 && (
             <rect x={x1} y={Math.min(entryY,slY)}
               width={(x2-x1)*zoneP} height={Math.abs(slY-entryY)}
-              fill={`rgba(239,83,80,${0.12*zoneP})`} />
+              fill={`rgba(239,83,80,${0.06*zoneP})`} />
           )}
-          {/* Profit zone */}
+          {/* Profit zone — very low opacity */}
           {zoneP > 0 && (
             <rect x={x1} y={Math.min(entryY,tpY)}
               width={(x2-x1)*zoneP} height={Math.abs(tpY-entryY)}
-              fill={`rgba(38,166,154,${0.12*zoneP})`} />
+              fill={`rgba(38,166,154,${0.06*zoneP})`} />
           )}
-          {/* R:R label */}
-          {zoneP > 0.7 && overlay.rr_ratio && (
-            <>
-              <rect x={x2-52} y={Math.min(entryY,tpY)+8}
-                width={48} height={20} fill="rgba(20,20,20,0.85)" rx={4} />
-              <text x={x2-50} y={Math.min(entryY,tpY)+22}
-                fill="white" fontSize={13} fontFamily="Arial" fontWeight="bold">
-                {overlay.rr_ratio}
-              </text>
-            </>
-          )}
+          {/* R:R label — positioned to the LEFT of the chart area so it
+              never covers candles. Large pill with high contrast. */}
+          {fadeProg > 0.3 && overlay.rr_ratio && (() => {
+            const rrText    = overlay.rr_ratio;
+            const rrPillW   = rrText.length * 18 + 28;  // scales with text length
+            const rrPillH   = 40;
+            // Place pill to the LEFT of the chart (outside candle area)
+            // Clamp so it stays inside the canvas left edge
+            const rrPillX   = Math.max(4, chartX - rrPillW - 8);
+            // Vertically center between entry and TP
+            const midY      = (entryY + tpY) / 2;
+            const rrPillY   = Math.max(CHART_Y + 4, midY - rrPillH / 2);
+            // Arrow pointing right from the pill toward the chart
+            const arrowTipX = chartX - 2;
+            const arrowMidY = rrPillY + rrPillH / 2;
+            return (
+              <>
+                {/* Connector line from pill to entry line */}
+                <line
+                  x1={arrowTipX} y1={arrowMidY}
+                  x2={x1} y2={entryY}
+                  stroke="rgba(201,168,76,0.45)"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                />
+                {/* Pill background — gold brand colour */}
+                <rect
+                  x={rrPillX} y={rrPillY}
+                  width={rrPillW} height={rrPillH}
+                  fill="rgba(27,42,74,0.92)" rx={6}
+                />
+                {/* Gold border */}
+                <rect
+                  x={rrPillX} y={rrPillY}
+                  width={rrPillW} height={rrPillH}
+                  fill="none" stroke="rgba(201,168,76,0.85)"
+                  strokeWidth={1.5} rx={6}
+                />
+                {/* Label line 1: R:R */}
+                <text
+                  x={rrPillX + rrPillW / 2} y={rrPillY + 15}
+                  fill="rgba(201,168,76,0.7)"
+                  fontSize={13} fontFamily="Arial" fontWeight="600"
+                  textAnchor="middle"
+                >
+                  R:R
+                </text>
+                {/* Label line 2: the ratio value — large and bold */}
+                <text
+                  x={rrPillX + rrPillW / 2} y={rrPillY + 33}
+                  fill="#FFFFFF"
+                  fontSize={19} fontFamily="Arial" fontWeight="800"
+                  textAnchor="middle"
+                >
+                  {rrText}
+                </text>
+              </>
+            );
+          })()}
         </g>
       );
     }
@@ -655,9 +703,9 @@ function ChartOverlay({
 
       if (hasLeftAnchor) {
         // ── New behaviour: structural high candle → BOS candle ────────────
-        const xLeft  = candleToX(overlay.candle_start);
-        const xRight = candleRight(overlay.candle_index);        // stops AT BOS candle right edge
-        const lineLen = xRight - xLeft;
+        const xLeft  = candleLeft(overlay.candle_start);   // start from LEFT edge of structural high candle
+        const xRight = candleRight(overlay.candle_index);  // stop at RIGHT edge of BOS candle — no further
+        const lineLen = Math.max(0, xRight - xLeft);       // guard against negative if candles overlap
         const lineEnd = xLeft + lineLen * expandProg;
 
         // Label at CENTER of the line — appears when line is 50% drawn
@@ -908,13 +956,14 @@ function HookText({ hookText, brand, bgKey, hookH, canvasW, frame, fps }) {
   // Nothing to render if hook_text is missing
   if (!hookText) return null;
 
-  // Fade in over first 0.5 seconds — gentle entry so the first candle
-  // can start drawing while the title is still appearing
-  const fadeFrames = Math.round(fps * 0.5);
-  const opacity    = Math.min(frame / fadeFrames, 1);
+  // Hook text is visible from frame 1 — no delay.
+  // The chart doesn't start until 1800ms so the hook has plenty of time.
+  // Small fade-in over 0.2s so it doesn't feel abrupt.
+  const fadeFrames = Math.round(fps * 0.2);
+  const opacity    = frame === 0 ? 0 : Math.min(frame / Math.max(fadeFrames, 1), 1);
 
-  const isLight    = bgKey === 'white' || bgKey === 'off_white';
-  const textColor  = isLight ? '#1B2A4A' : '#FFFFFF';
+  // Hook text is always black regardless of background
+  const textColor  = '#000000';
 
   // Subtle separator line between hook zone and chart zone
   const separatorColor = isLight
@@ -950,7 +999,7 @@ function HookText({ hookText, brand, bgKey, hookH, canvasW, frame, fps }) {
       {/* Hook text — single line, uppercase, large */}
       <div
         style={{
-          fontFamily:    brand.font_heading,
+          fontFamily:    `${brand.font_heading}, Arial, sans-serif`,
           fontSize:      52,
           fontWeight:    700,
           letterSpacing: 0.5,
