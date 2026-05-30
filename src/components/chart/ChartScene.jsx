@@ -536,17 +536,17 @@ function ChartOverlay({
             <text x={x2+4} y={tpY+4} fill={green}
               fontSize={16} fontFamily="Arial" fontWeight="bold">TP</text>
           )}
-          {/* Risk zone — very low opacity so candles remain readable */}
+          {/* Risk zone — red fill between entry and SL */}
           {zoneP > 0 && (
             <rect x={x1} y={Math.min(entryY,slY)}
               width={(x2-x1)*zoneP} height={Math.abs(slY-entryY)}
-              fill={`rgba(239,83,80,${0.06*zoneP})`} />
+              fill={`rgba(153,27,27,${0.18*zoneP})`} />
           )}
-          {/* Profit zone — very low opacity */}
+          {/* Profit zone — green fill between entry and TP */}
           {zoneP > 0 && (
             <rect x={x1} y={Math.min(entryY,tpY)}
               width={(x2-x1)*zoneP} height={Math.abs(tpY-entryY)}
-              fill={`rgba(38,166,154,${0.06*zoneP})`} />
+              fill={`rgba(22,101,52,${0.20*zoneP})`} />
           )}
           {/* R:R label — positioned to the LEFT of the chart area so it
               never covers candles. Large pill with high contrast. */}
