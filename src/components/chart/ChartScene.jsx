@@ -147,8 +147,8 @@ export const ChartScene = ({ sceneJson }) => {
         candle_interval_ms={candleIntervalMs}
         start_ms={chartConfig.start_ms !== undefined ? chartConfig.start_ms : 0}
         visible_count={visibleCount}
-        candle_width={52}
-        candle_gap={3}
+        candle_width={42}
+        candle_gap={2}
         bullish_color={bullishColor}
         bearish_color={bearishColor}
         wick_color={bgKey === 'white' || bgKey === 'off_white' ? '#333333' : '#AAAAAA'}
