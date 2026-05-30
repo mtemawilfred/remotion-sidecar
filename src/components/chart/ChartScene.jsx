@@ -960,14 +960,18 @@ function HookText({ hookText, brand, bgKey, hookH, canvasW, frame, fps }) {
   // Nothing to render if hook_text is missing
   if (!hookText) return null;
 
-  // Hook text is visible from frame 1 — no delay.
-  // The chart doesn't start until 1800ms so the hook has plenty of time.
-  // Small fade-in over 0.2s so it doesn't feel abrupt.
+  // Two-color format: "BLUE WORDS|black supporting text"
+  // Split on first | — blue part before, black part after.
+  // If no | present, entire text renders in black.
+  const pipeIdx  = hookText.indexOf('|');
+  const bluePart  = pipeIdx >= 0 ? hookText.substring(0, pipeIdx).trim() : '';
+  const blackPart = pipeIdx >= 0 ? hookText.substring(pipeIdx + 1).trim() : hookText.trim();
+
+  // Fast fade-in over 0.2s
   const fadeFrames = Math.round(fps * 0.2);
   const opacity    = frame === 0 ? 0 : Math.min(frame / Math.max(fadeFrames, 1), 1);
 
-  // Hook text is always black regardless of background
-  const textColor      = '#000000';
+  // Separator line colour adapts to background
   const isLight        = bgKey === 'white' || bgKey === 'off_white';
 
   // Subtle separator line between hook zone and chart zone
