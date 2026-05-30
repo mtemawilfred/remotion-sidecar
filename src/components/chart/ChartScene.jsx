@@ -234,9 +234,10 @@ export const ChartScene = ({ sceneJson }) => {
       }
 
       {/* ── HOOK TEXT ────────────────────────────────────────────────────────
-          CHANGED FROM v1: ChartCaption (word-by-word karaoke) is gone.
-          HookText renders sceneJson.hook_text as a single static line
-          in the top 12% of the frame. Visible for the entire video.
+          Rendered LAST so it appears on top of all chart layers.
+          Supports two-color text: use | to split blue | black.
+          e.g. "The last candle|before the explosion." → blue|black
+      */}
       <HookText
         hookText={sceneJson.hook_text || ''}
         brand={brand}
@@ -703,10 +704,13 @@ function ChartOverlay({
 
       if (hasLeftAnchor) {
         // ── New behaviour: structural high candle → BOS candle ────────────
-        const xLeft  = candleToX(overlay.candle_start);    // center of structural high candle (left anchor)
-        const xRight = candleToX(overlay.candle_index);    // center of BOS candle (right anchor — stops here)
+        // Left anchor: center of structural high candle
+        // Right anchor: CENTER of BOS candle — line must STOP here, no further
+        const xLeft  = candleToX(overlay.candle_start);
+        const xRight = candleToX(overlay.candle_index);
         const lineLen = Math.max(0, xRight - xLeft);
-        const lineEnd = xLeft + lineLen * expandProg;
+        // Hard cap: lineEnd can never exceed xRight regardless of expandProg
+        const lineEnd = Math.min(xRight, xLeft + lineLen * expandProg);
 
         // Label at CENTER of the line — appears when line is 50% drawn
         const midX  = xLeft + lineLen * 0.5;
@@ -996,23 +1000,24 @@ function HookText({ hookText, brand, bgKey, hookH, canvasW, frame, fps }) {
         }}
       />
 
-      {/* Hook text — single line, uppercase, large */}
+      {/* Hook text — two-color: blue part | black part */}
       <div
         style={{
           fontFamily:    `${brand.font_heading}, Arial, sans-serif`,
           fontSize:      52,
           fontWeight:    700,
           letterSpacing: 0.5,
-          color:         textColor,
           textTransform: 'uppercase',
           textAlign:     'center',
-          lineHeight:    1.1,
-          // Accent colour for any text wrapped in a special marker.
-          // Currently unused — future enhancement: allow hook_text to include
-          // [highlighted] words that render in brand.accent colour.
+          lineHeight:    1.15,
         }}
       >
-        {hookText}
+        {/* Blue part — brand accent blue for emphasis words */}
+        {bluePart && (
+          <span style={{ color: '#2563EB' }}>{bluePart} </span>
+        )}
+        {/* Black part — main text */}
+        <span style={{ color: '#000000' }}>{blackPart}</span>
       </div>
     </AbsoluteFill>
   );
