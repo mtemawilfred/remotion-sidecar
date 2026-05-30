@@ -986,9 +986,11 @@ function HookText({ hookText, brand, bgKey, hookH, canvasW, frame, fps }) {
         height:         hookH,
         bottom:         'auto',
         display:        'flex',
-        alignItems:     'center',
+        alignItems:     'flex-end',   // anchor to bottom of hook zone
         justifyContent: 'center',
+        paddingBottom:  32,           // sit 32px above the chart — pulls text down
         padding:        '0 40px',
+        paddingBottom:  32,
         opacity,
         pointerEvents:  'none',
       }}
