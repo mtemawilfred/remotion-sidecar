@@ -145,10 +145,10 @@ export const ChartScene = ({ sceneJson }) => {
       <LiveCandleChart
         candles={candles}
         candle_interval_ms={candleIntervalMs}
-        start_ms={chartConfig.start_ms || 1800}
+        start_ms={chartConfig.start_ms !== undefined ? chartConfig.start_ms : 0}
         visible_count={visibleCount}
-        candle_width={36}
-        candle_gap={6}
+        candle_width={52}
+        candle_gap={3}
         bullish_color={bullishColor}
         bearish_color={bearishColor}
         wick_color={bgKey === 'white' || bgKey === 'off_white' ? '#333333' : '#AAAAAA'}
@@ -629,8 +629,8 @@ function ChartOverlay({
       const w  = (x2 - x1) * expandProg;
 
       const isSwept    = overlay.swept;
-      const lineColor  = isSwept ? 'rgba(220,60,60,0.90)' : 'rgba(80,80,80,0.75)';
-      const arrowColor = isSwept ? 'rgba(220,60,60,1.0)'  : 'rgba(80,80,80,0.90)';
+      const lineColor  = isSwept ? 'rgba(220,60,60,0.95)' : 'rgba(50,50,50,0.90)';
+      const arrowColor = isSwept ? 'rgba(220,60,60,1.0)'  : 'rgba(50,50,50,1.0)';
 
       // Tailless arrow (chevron) — points RIGHT toward the liquidity level
       // Sits just to the LEFT of the line start, pointing at the price
@@ -648,7 +648,7 @@ function ChartOverlay({
           <line
             x1={x1} y1={y} x2={x1+w} y2={y}
             stroke={lineColor}
-            strokeWidth={isSwept ? 2.5 : 1.8}
+            strokeWidth={isSwept ? 2.5 : 2.2}
             strokeDasharray="7 4"
           />
           {/* Tailless arrow chevron pointing at the level */}
@@ -668,7 +668,7 @@ function ChartOverlay({
             return (
               <>
                 <rect x={px} y={py} width={pw} height={ph}
-                  fill={isSwept ? 'rgba(220,60,60,0.85)' : 'rgba(60,60,60,0.80)'}
+                  fill={isSwept ? 'rgba(220,60,60,0.95)' : 'rgba(30,30,30,0.90)'}
                   rx={4} />
                 <text x={px + 8} y={py + ph - 5} fill="#FFFFFF"
                   fontSize={15} fontFamily="Arial" fontWeight="bold">
@@ -904,19 +904,41 @@ function ChartFloatingLabel({
     ? priceToY(overlay.price_level)
     : chartY + (overlay.y_pct ?? 0.5) * chartH;
 
-  const text   = overlay.text || '';
-  const isBuy  = text.toLowerCase().includes('buy');
-  const isSell = text.toLowerCase().includes('sell');
+  const rawText = overlay.text || '';
+  const isBuy   = rawText.toLowerCase().includes('buy');
+  const isSell  = rawText.toLowerCase().includes('sell');
   const bgColor = overlay.color
     ? overlay.color
     : isBuy  ? '#26a69a'
     : isSell ? '#ef5350'
     : brand.accent;
 
-  // Estimate pill width and clamp so it never exits right or left edge
-  const estPillW = text.length * 16 + 28;
+  // Split long labels into two lines — wrap at 18 chars on word boundary
+  // This prevents the pill from exiting the canvas on long text like
+  // "PRICE RETURNS TO ORDER BLOCK" (28 chars)
+  const MAX_LINE = 18;
+  let lines;
+  if (rawText.length <= MAX_LINE) {
+    lines = [rawText];
+  } else {
+    const words = rawText.split(' ');
+    const l1 = []; const l2 = [];
+    let cur = l1;
+    let len = 0;
+    for (const w of words) {
+      if (len + w.length > MAX_LINE && cur === l1) { cur = l2; len = 0; }
+      cur.push(w); len += w.length + 1;
+    }
+    lines = l2.length ? [l1.join(' '), l2.join(' ')] : [l1.join(' ')];
+  }
+  const isMulti = lines.length > 1;
+
+  // Pill width based on longest line, clamped inside canvas
+  const longestLine = Math.max(...lines.map(l => l.length));
+  const estPillW = longestLine * 14 + 28;
+  const pillH    = isMulti ? 62 : 38;
   const clampedLeft = Math.max(8, Math.min(px + 8, CANVAS_W - estPillW - 8));
-  const clampedTop  = Math.max(CHART_Y + 4, Math.min(py - 22, CHART_Y + CHART_H - 44));
+  const clampedTop  = Math.max(CHART_Y + 4, Math.min(py - pillH / 2, CHART_Y + CHART_H - pillH - 4));
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none', opacity }}>
@@ -930,16 +952,17 @@ function ChartFloatingLabel({
           backgroundColor: bgColor,
           color:           '#FFFFFF',
           fontFamily:      brand.font_heading,
-          fontSize:        26,
+          fontSize:        22,
           fontWeight:      700,
-          padding:         '5px 14px',
+          padding:         '6px 14px',
           borderRadius:    6,
-          whiteSpace:      'nowrap',
+          whiteSpace:      'pre-line',
           letterSpacing:   0.5,
-          maxWidth:        CANVAS_W - 16,
+          maxWidth:        CANVAS_W - 24,
+          lineHeight:      1.25,
         }}
       >
-        {text}
+        {lines.join('\n')}
       </div>
     </AbsoluteFill>
   );
