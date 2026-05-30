@@ -967,7 +967,8 @@ function HookText({ hookText, brand, bgKey, hookH, canvasW, frame, fps }) {
   const opacity    = frame === 0 ? 0 : Math.min(frame / Math.max(fadeFrames, 1), 1);
 
   // Hook text is always black regardless of background
-  const textColor  = '#000000';
+  const textColor      = '#000000';
+  const isLight        = bgKey === 'white' || bgKey === 'off_white';
 
   // Subtle separator line between hook zone and chart zone
   const separatorColor = isLight
