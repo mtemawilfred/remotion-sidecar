@@ -422,6 +422,112 @@ function ChartOverlay({
       );
     }
 
+
+    // ── TRENDLINE ────────────────────────────────────────────────────────────
+    // Draws a diagonal line between two anchor candle/price points.
+    // Used for trendline liquidity — the document-defined type where retail
+    // traders place stops above/below a trendline, which institutions sweep.
+    //
+    // Required overlay fields:
+    //   candle_start + price_start — first anchor (candle index + price)
+    //   candle_end   + price_end   — second anchor (candle index + price)
+    //   extend_to    (optional)    — candle index to extend the line to
+    //   direction: "up" or "down" — up trendline (lows) or down trendline (highs)
+    //   swept: true/false          — changes colour from grey to red when swept
+    //   label (optional)           — pill label shown mid-line
+    //
+    // Trendline price at any candle N:
+    //   slope = (price_end - price_start) / (candle_end - candle_start)
+    //   price_at_N = price_start + slope × (N - candle_start)
+    case 'trendline': {
+      const cStart = overlay.candle_start;
+      const cEnd   = overlay.candle_end;
+      const pStart = overlay.price_start;
+      const pEnd   = overlay.price_end;
+
+      if (cStart == null || cEnd == null || pStart == null || pEnd == null) return null;
+
+      // Calculate slope for optional extension
+      const slope = (pEnd - pStart) / (cEnd - cStart);
+
+      // Left anchor — always candle_start
+      const x1 = candleToX(cStart);
+      const y1 = priceToY(pStart);
+
+      // Right anchor — extend_to if provided, otherwise candle_end
+      const rightCandle = overlay.extend_to != null ? overlay.extend_to : cEnd;
+      const rightPrice  = pStart + slope * (rightCandle - cStart);
+      const x2 = candleToX(rightCandle);
+      const y2 = priceToY(rightPrice);
+
+      const isSwept   = overlay.swept === true;
+      // Unswept: grey dashed diagonal. Swept: red solid.
+      const lineColor = isSwept ? 'rgba(220,60,60,0.90)' : 'rgba(60,60,60,0.75)';
+      const lineWidth = isSwept ? 2.5 : 2;
+      const dashArray = isSwept ? 'none' : '8 5';
+
+      // Label pill — shown at midpoint of the line
+      const labelText = overlay.label || '';
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2;
+
+      // Animate: line draws from left to right using expandProg
+      const lineEndX = x1 + (x2 - x1) * expandProg;
+      const lineEndY = y1 + (y2 - y1) * expandProg;
+
+      return (
+        <g opacity={fadeProg}>
+          {/* Main diagonal line */}
+          <line
+            x1={x1} y1={y1}
+            x2={lineEndX} y2={lineEndY}
+            stroke={lineColor}
+            strokeWidth={lineWidth}
+            strokeDasharray={dashArray === 'none' ? undefined : dashArray}
+          />
+          {/* Small circle at each anchor to mark touch points */}
+          {expandProg > 0.3 && (
+            <circle cx={x1} cy={y1} r={5}
+              fill="none" stroke={lineColor} strokeWidth={2} />
+          )}
+          {expandProg > 0.95 && (
+            <circle cx={x2} cy={y2} r={5}
+              fill="none" stroke={lineColor} strokeWidth={2} />
+          )}
+          {/* Label pill at midpoint */}
+          {labelText && expandProg > 0.6 && (() => {
+            const pw = labelText.length * 10 + 16;
+            const ph = 22;
+            const px = Math.max(chartX, Math.min(midX - pw/2, chartX + chartW - pw));
+            const py = midY - ph - 6;
+            return (
+              <>
+                <rect x={px} y={py} width={pw} height={ph}
+                  fill={isSwept ? 'rgba(220,60,60,0.90)' : 'rgba(40,40,40,0.80)'}
+                  rx={4} />
+                <text x={px + 8} y={py + ph - 6} fill="#FFFFFF"
+                  fontSize={14} fontFamily="Arial" fontWeight="bold">
+                  {labelText}
+                </text>
+              </>
+            );
+          })()}
+          {/* Swept indicator — red arrow at sweep candle right edge */}
+          {isSwept && expandProg > 0.95 && (
+            <>
+              <circle cx={x2} cy={y2} r={8} fill="rgba(220,60,60,0.95)" />
+              <rect x={x2 + 12} y={y2 - 13} width={90} height={22}
+                fill="rgba(220,60,60,0.92)" rx={4} />
+              <text x={x2 + 20} y={y2 + 3} fill="#FFFFFF"
+                fontSize={14} fontFamily="Arial" fontWeight="bold">
+                TL SWEPT ✓
+              </text>
+            </>
+          )}
+        </g>
+      );
+    }
+
     // ── ORDER BLOCK ─────────────────────────────────────────────────────────
     case 'order_block': {
       const idx   = overlay.candle_index;
