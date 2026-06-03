@@ -84,7 +84,7 @@ export const RepurposeScene = ({ sceneJson }) => {
   }
 
   return (
-    <AbsoluteFill style={{ overflow: 'hidden', background: '#1B2A4A' }}>
+    <AbsoluteFill style={{ overflow: 'hidden', background: '#FFFFFF' }}>
       {segmentsWithFrames.map((seg, i) =>
         seg.type === 'live' ? (
           <LiveSegment
