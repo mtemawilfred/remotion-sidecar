@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 // Increased from 50mb to handle REPURPOSE_SCENE payloads.
 // A typical 5-min forex chart tutorial video at ~50MB = ~67MB of base64.
 // Plus audio chunks (~2MB total), we need headroom for larger source videos.
-app.use(express.json({ limit: '200mb' }));
+app.use(express.json({ limit: '200mb', type: '*/*' }));
 
 // ── Static asset routes ────────────────────────────────────────────────────
 
