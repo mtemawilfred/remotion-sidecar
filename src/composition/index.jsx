@@ -1,15 +1,20 @@
 // ── composition/index.jsx ─────────────────────────────────────────────────
 // Remotion entry point.
-// Registers two compositions:
-//   1. SceneComposer — existing composition for COMPOSITION and MOTION_GRAPHIC
-//   2. ChartScene    — new composition for CHART_SCENE (full-frame forex charts)
+// Registers THREE compositions:
+//   1. SceneComposer    — existing: COMPOSITION and MOTION_GRAPHIC render types
+//   2. ChartScene       — existing: CHART_SCENE (9:16 animated candlestick charts)
+//   3. RepurposeScene   — NEW: REPURPOSE_SCENE (freeze-and-explain video repurposing)
 //
-// The renderer.js routes to the correct composition based on render_type
-// in the incoming scene_json.
+// renderer.js routes to the correct composition based on render_type in scene_json.
+// Dimensions and FPS per composition:
+//   SceneComposer   — 1408×768  @ 24fps  (16:9 landscape — WF2 long-form)
+//   ChartScene      — 1080×1920 @ 30fps  (9:16 vertical  — WF-B short-form)
+//   RepurposeScene  — 1080×1920 @ 30fps  (9:16 vertical  — video repurposing)
 
 import { Composition, registerRoot } from 'remotion';
-import { SceneComposer } from '../components/SceneComposer';
-import { ChartScene }    from '../components/chart/ChartScene';
+import { SceneComposer }    from '../components/SceneComposer';
+import { ChartScene }       from '../components/chart/ChartScene';
+import { RepurposeScene }   from '../components/RepurposeScene';
 
 // ── Default props for SceneComposer (Remotion Studio preview only) ─────────
 const DEFAULT_SCENE = {
@@ -38,8 +43,6 @@ const DEFAULT_SCENE = {
 };
 
 // ── Default props for ChartScene (Remotion Studio preview only) ────────────
-// These generate a sample bullish chart so the composition is previewable
-// in Remotion Studio without a real scene_json from n8n.
 const DEFAULT_CHART_SCENE = {
   scene_id:    0,
   render_type: 'CHART_SCENE',
@@ -48,7 +51,7 @@ const DEFAULT_CHART_SCENE = {
     primary:      '#1B2A4A',
     accent:       '#C9A84C',
     danger:       '#991B1B',
-    success:      '#166534',
+    success:      '#166634',
     font_heading: 'Oswald',
     font_body:    'Inter',
   },
@@ -61,7 +64,6 @@ const DEFAULT_CHART_SCENE = {
     { word: 'MARKET', start_ms: 1700, end_ms: 2200 },
   ],
   chart: {
-    // Sample uptrend with 14 candles — enough to show the panning behaviour
     candles: [
       { o: 1.0800, h: 1.0825, l: 1.0785, c: 1.0820 },
       { o: 1.0820, h: 1.0845, l: 1.0810, c: 1.0838 },
@@ -91,6 +93,47 @@ const DEFAULT_CHART_SCENE = {
   transition_out: { type: 'fade', duration_ms: 300 },
 };
 
+// ── Default props for RepurposeScene (Remotion Studio preview only) ────────
+// Minimal sample sequence: one live block followed by one freeze block.
+// The video URL is a public domain sample so Studio preview works without
+// a real source video.
+const DEFAULT_REPURPOSE_SCENE = {
+  render_type:      'REPURPOSE_SCENE',
+  scene_id:         'preview',
+  folder_name:      'preview',
+  duration_ms:      8000,
+  // Use a placeholder URL for Studio preview.
+  // Real renders supply actual localhost URLs via renderer.js file setup.
+  source_video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+  cta_banner_url:   '',
+  fps:              30,
+  canvas:           { w: 1080, h: 1920 },
+  brand: {
+    primary:      '#1B2A4A',
+    accent:       '#C9A84C',
+    font_heading: 'Oswald',
+    font_body:    'Inter',
+  },
+  sequence: [
+    { type: 'live',   start_time: 0, end_time: 3 },
+    {
+      type:       'freeze',
+      segment_id: 1,
+      timestamp:  3,
+      audio_url:  '',
+      duration:   5,
+      event_type: 'commentary',
+      show_cta:   false,
+      captions: [
+        { word: 'This',  start: 0.0, end: 0.4  },
+        { word: 'is',    start: 0.4, end: 0.7  },
+        { word: 'the',   start: 0.7, end: 1.0  },
+        { word: 'setup', start: 1.0, end: 1.5  },
+      ],
+    },
+  ],
+};
+
 export const RemotionRoot = () => {
   return (
     <>
@@ -111,7 +154,7 @@ export const RemotionRoot = () => {
       {/* ── Composition 2: ChartScene ─────────────────────────────────────
           Handles render_type: 'CHART_SCENE'.
           Canvas: 1080×1920 (9:16 vertical) — short-form forex chart videos.
-          30fps — smoother candle animation at this frame rate. */}
+          30fps — smoother candle animation. */}
       <Composition
         id="ChartScene"
         component={ChartScene}
@@ -120,6 +163,24 @@ export const RemotionRoot = () => {
         fps={30}
         durationInFrames={300}
         defaultProps={{ sceneJson: DEFAULT_CHART_SCENE }}
+      />
+
+      {/* ── Composition 3: RepurposeScene ─────────────────────────────────
+          Handles render_type: 'REPURPOSE_SCENE'.
+          Canvas: 1080×1920 (9:16 vertical) — video repurposing pipeline.
+          Freeze-and-explain: source video pauses at event timestamps while
+          voiceover plays with karaoke captions, then resumes.
+          30fps to match source video smoothness.
+          durationInFrames=1 is a placeholder — renderer.js always overrides
+          this with the real duration calculated from the sequence. */}
+      <Composition
+        id="RepurposeScene"
+        component={RepurposeScene}
+        width={1080}
+        height={1920}
+        fps={30}
+        durationInFrames={300}
+        defaultProps={{ sceneJson: DEFAULT_REPURPOSE_SCENE }}
       />
     </>
   );

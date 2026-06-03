@@ -6,13 +6,26 @@ const { renderScene } = require('./renderer');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// Parse large JSON bodies — scene JSON includes base64 pose PNGs
-app.use(express.json({ limit: '50mb' }));
+// ── Body size limit: 200mb ─────────────────────────────────────────────────
+// Increased from 50mb to handle REPURPOSE_SCENE payloads.
+// A typical 5-min forex chart tutorial video at ~50MB = ~67MB of base64.
+// Plus audio chunks (~2MB total), we need headroom for larger source videos.
+app.use(express.json({ limit: '200mb' }));
 
-// Serve BGM and SFX assets to the Remotion browser renderer.
+// ── Static asset routes ────────────────────────────────────────────────────
+
+// BGM and SFX files baked into the Docker image at build time.
 // Remotion components reference audio as /public/assets/bgm/track.mp3
-// This maps that path to the /assets/ folder baked into the Docker image.
 app.use('/public/assets', express.static(path.join(__dirname, '../assets')));
+
+// Temp render files for REPURPOSE_SCENE.
+// renderer.js writes decoded source videos, audio chunks, and CTA banners
+// here before each render. Remotion's OffthreadVideo and Audio components
+// fetch them via http://localhost:PORT/public/tmp_renders/... URLs.
+// Files are deleted by renderer.js immediately after each render completes.
+// express.static serves current directory contents — files written after
+// server start ARE served correctly.
+app.use('/public/tmp_renders', express.static(path.join(__dirname, '../tmp_renders')));
 
 // ── Health check ───────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
@@ -25,11 +38,22 @@ app.post('/render-scene', async (req, res) => {
   if (!scene_json) {
     return res.status(400).json({ error: 'Missing scene_json in request body' });
   }
-  console.log(`[render] Scene ${scene_json.scene_id} | Type: ${scene_json.render_type} | Duration: ${scene_json.duration_ms}ms`);
+
+  // Log the scene. For REPURPOSE_SCENE, duration_ms is computed by n8n from
+  // the sequence. For other types, duration_ms comes directly in scene_json.
+  console.log(
+    `[render] Scene ${scene_json.scene_id} | ` +
+    `Type: ${scene_json.render_type} | ` +
+    `Duration: ${scene_json.duration_ms}ms`
+  );
+
   try {
     const mp4Buffer = await renderScene(scene_json);
     res.set('Content-Type', 'video/mp4');
-    res.set('Content-Disposition', `attachment; filename="scene_${String(scene_json.scene_id).padStart(3,'0')}.mp4"`);
+    res.set(
+      'Content-Disposition',
+      `attachment; filename="scene_${String(scene_json.scene_id).padStart(3, '0')}.mp4"`
+    );
     res.send(mp4Buffer);
     console.log(`[render] Scene ${scene_json.scene_id} complete — ${mp4Buffer.length} bytes`);
   } catch (err) {
