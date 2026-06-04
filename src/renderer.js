@@ -9,13 +9,18 @@
 //
 // REPURPOSE_SCENE FILE HANDLING:
 //   The scene_json for REPURPOSE_SCENE contains base64-encoded files
-//   (source video, audio chunks, CTA banner) because n8n and this sidecar
-//   are separate Railway services with no shared filesystem.
+//   (source video, audio chunks, CTA banner, BGM) because n8n and this
+//   sidecar are separate Railway services with no shared filesystem.
 //   setupRepurposeFiles() decodes those files into a temp dir under
 //   /app/tmp_renders/, which is served statically by server.js.
 //   It then rewrites the scene_json with http://localhost:PORT/... URLs
 //   so Remotion's OffthreadVideo and Audio components can fetch them.
 //   The temp dir is deleted immediately after the render completes.
+//
+// BGM STRATEGY — two-tier:
+//   Primary:  bg_music_b64 in payload (picked from Google Drive by n8n)
+//   Fallback: random file from local assets/bgm/ (baked into Docker image)
+//   If both fail, video renders without background music (non-fatal).
 
 const path = require('path');
 const os   = require('os');
@@ -88,10 +93,11 @@ function getCompositionSpec(sceneJson) {
 //
 // WHY THIS IS NEEDED:
 //   n8n and this sidecar are separate Railway services — no shared /tmp.
-//   The payload carries source_video_b64, cta_banner_b64, and audio_b64
-//   per freeze segment. We decode those into a temp dir, serve them via the
-//   Express static route /public/tmp_renders (configured in server.js), and
-//   rewrite the scene_json with http://localhost:PORT/... URLs for Remotion.
+//   The payload carries source_video_b64, cta_banner_b64, audio_b64 per
+//   freeze segment, and optionally bg_music_b64. We decode all of those
+//   into a temp dir, serve them via the Express static route
+//   /public/tmp_renders (configured in server.js), and rewrite the
+//   scene_json with http://localhost:PORT/... URLs for Remotion.
 //
 // CLEANUP:
 //   The temp dir is returned as cleanupDir and deleted in renderScene()
@@ -104,9 +110,9 @@ async function setupRepurposeFiles(sceneJson) {
 
   // Unique temp dir: folder_name + timestamp to avoid collisions under
   // N8N_CONCURRENCY_PRODUCTION_LIMIT=3 (up to 3 concurrent renders)
-  const dirName  = `${sceneJson.folder_name}_${Date.now()}`;
-  const tmpDir   = path.resolve(__dirname, '../tmp_renders', dirName);
-  const baseUrl  = `http://localhost:${PORT}/public/tmp_renders/${dirName}`;
+  const dirName = `${sceneJson.folder_name}_${Date.now()}`;
+  const tmpDir  = path.resolve(__dirname, '../tmp_renders', dirName);
+  const baseUrl = `http://localhost:${PORT}/public/tmp_renders/${dirName}`;
 
   fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -128,7 +134,6 @@ async function setupRepurposeFiles(sceneJson) {
   const transformedSequence = sceneJson.sequence.map(seg => {
     if (seg.type !== 'freeze') return seg;
 
-    // Decode WAV audio chunk for this segment
     const audioFileName = `audio_${seg.segment_id}.wav`;
     const audioPath     = path.join(tmpDir, audioFileName);
     fs.writeFileSync(audioPath, Buffer.from(seg.audio_b64, 'base64'));
@@ -141,34 +146,60 @@ async function setupRepurposeFiles(sceneJson) {
     };
   });
 
-  // ── Pick a random background music track ───────────────────────────────
-  // BGM files live in assets/bgm/ and are served by Express at
-  // /public/assets/bgm/<filename>. We pick a random track each render so
-  // every video gets a different background music track.
-  // volume is controlled in RepurposeScene.jsx (BGM_VOLUME = 0.10).
+  // ── BGM: primary from payload, fallback to local assets/bgm/ ───────────
+  //
+  // Primary: n8n picks a track from Google Drive and passes it as
+  //   bg_music_b64. We decode it into tmpDir and serve it via Express.
+  //
+  // Fallback: if the payload has no BGM (Drive pick failed, node skipped,
+  //   or n8n connection issue), we pick a random track from the local
+  //   assets/bgm/ folder baked into the Docker image.
+  //
+  // If both fail, bg_music_url stays null and RepurposeScene.jsx renders
+  //   the video without background music — non-fatal.
   let bg_music_url = null;
-  try {
-    const bgmDir   = path.resolve(__dirname, '../assets/bgm');
-    const bgmFiles = fs.readdirSync(bgmDir).filter(f => f.endsWith('.mp3'));
-    if (bgmFiles.length > 0) {
-      const randomBgm = bgmFiles[Math.floor(Math.random() * bgmFiles.length)];
-      bg_music_url    = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(randomBgm)}`;
-      console.log(`[renderer] BGM selected: ${randomBgm}`);
+
+  if (sceneJson.bg_music_b64) {
+    // ── Primary: decode BGM from payload ───────────────────────────────────
+    try {
+      const bgmExt      = (sceneJson.bg_music_name || 'track.mp3').split('.').pop().toLowerCase();
+      const bgmFileName = `bg_music.${bgmExt}`;
+      const bgmFilePath = path.join(tmpDir, bgmFileName);
+      fs.writeFileSync(bgmFilePath, Buffer.from(sceneJson.bg_music_b64, 'base64'));
+      bg_music_url = `${baseUrl}/${bgmFileName}`;
+      console.log(`[renderer] BGM from Drive: ${sceneJson.bg_music_name || bgmFileName}`);
+    } catch (err) {
+      console.warn(`[renderer] BGM decode failed — trying local fallback: ${err.message}`);
     }
-  } catch (err) {
-    console.warn(`[renderer] BGM selection failed (non-fatal): ${err.message}`);
+  }
+
+  if (!bg_music_url) {
+    // ── Fallback: pick random from local assets/bgm/ ───────────────────────
+    try {
+      const bgmDir   = path.resolve(__dirname, '../assets/bgm');
+      const bgmFiles = fs.readdirSync(bgmDir).filter(f => f.endsWith('.mp3'));
+      if (bgmFiles.length > 0) {
+        const randomBgm = bgmFiles[Math.floor(Math.random() * bgmFiles.length)];
+        bg_music_url    = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(randomBgm)}`;
+        console.log(`[renderer] BGM fallback (local): ${randomBgm}`);
+      } else {
+        console.log('[renderer] No local BGM files found — rendering without background music');
+      }
+    } catch (err) {
+      console.warn(`[renderer] BGM local fallback failed (non-fatal): ${err.message}`);
+    }
   }
 
   // ── Build transformed scene_json ────────────────────────────────────────
-  // Remove the large base64 fields — they've been written to disk.
+  // Strip all large base64 fields — they have been written to disk.
   // Replace with http:// URLs that Remotion's OffthreadVideo / Audio / Img
   // components can fetch from the Express static server.
-  const { source_video_b64, cta_banner_b64, ...rest } = sceneJson;
+  const { source_video_b64, cta_banner_b64, bg_music_b64, bg_music_name, ...rest } = sceneJson;
   const transformedSceneJson = {
     ...rest,
     source_video_url: `${baseUrl}/source.mp4`,
     cta_banner_url:   `${baseUrl}/cta_banner.png`,
-    bg_music_url,     // null if no BGM files found — component handles gracefully
+    bg_music_url,     // null if both primary and fallback failed — handled in RepurposeScene.jsx
     sequence:         transformedSequence,
   };
 
@@ -264,7 +295,7 @@ async function renderScene(sceneJson) {
   fs.unlinkSync(outPath);
 
   // ── Clean up REPURPOSE_SCENE temp files ─────────────────────────────────
-  // Source video + audio chunks can be large. Delete them immediately after
+  // Source video + audio chunks + BGM can be large. Delete immediately after
   // the render buffer is in memory to avoid filling the Railway volume.
   if (cleanupDir) {
     try {
