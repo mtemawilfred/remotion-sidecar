@@ -141,6 +141,24 @@ async function setupRepurposeFiles(sceneJson) {
     };
   });
 
+  // ── Pick a random background music track ───────────────────────────────
+  // BGM files live in assets/bgm/ and are served by Express at
+  // /public/assets/bgm/<filename>. We pick a random track each render so
+  // every video gets a different background music track.
+  // volume is controlled in RepurposeScene.jsx (BGM_VOLUME = 0.10).
+  let bg_music_url = null;
+  try {
+    const bgmDir   = path.resolve(__dirname, '../assets/bgm');
+    const bgmFiles = fs.readdirSync(bgmDir).filter(f => f.endsWith('.mp3'));
+    if (bgmFiles.length > 0) {
+      const randomBgm = bgmFiles[Math.floor(Math.random() * bgmFiles.length)];
+      bg_music_url    = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(randomBgm)}`;
+      console.log(`[renderer] BGM selected: ${randomBgm}`);
+    }
+  } catch (err) {
+    console.warn(`[renderer] BGM selection failed (non-fatal): ${err.message}`);
+  }
+
   // ── Build transformed scene_json ────────────────────────────────────────
   // Remove the large base64 fields — they've been written to disk.
   // Replace with http:// URLs that Remotion's OffthreadVideo / Audio / Img
@@ -150,6 +168,7 @@ async function setupRepurposeFiles(sceneJson) {
     ...rest,
     source_video_url: `${baseUrl}/source.mp4`,
     cta_banner_url:   `${baseUrl}/cta_banner.png`,
+    bg_music_url,     // null if no BGM files found — component handles gracefully
     sequence:         transformedSequence,
   };
 
