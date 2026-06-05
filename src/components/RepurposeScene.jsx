@@ -285,22 +285,49 @@ function LessonTitle({ title, brand }) {
 
 // ── KaraokeCaptions ──────────────────────────────────────────────────────────
 // Word-by-word karaoke captions pinned to the bottom of the canvas.
-// Dark semi-transparent pill background ensures readability on any surface:
-// white letterbox space, chart content, or full-bleed portrait video.
+// Dark semi-transparent pill background ensures readability on any surface.
+//
+// FIX — 2 lines at a time:
+//   Words are grouped into chunks of max 8 (≈2 lines of 4 words each).
+//   Chunk breaks at sentence-ending punctuation (if chunk has ≥3 words).
+//   Only the active chunk is rendered — the pill never shows more than
+//   8 words at once. Previous chunk vanishes when next chunk begins.
 //
 // Active word: bright blue (#00D4FF), bold.
-// Past words: white, dimmed (55% opacity).
-// Future words: white, normal weight.
+// Past words in active chunk: white, dimmed (55% opacity).
+// Future words in active chunk: white, normal weight.
 function KaraokeCaptions({ captions, fps, brand }) {
   const frame      = useCurrentFrame();
   const currentSec = frame / fps;
-
-  // A word is "active" when its start ≤ currentSec < end
-  const activeIdx = captions.findIndex(c =>
-    currentSec >= c.start && currentSec < c.end
-  );
-
   const fontFamily = brand.font_body || 'Inter';
+
+  // ── Group captions into 2-line display chunks ──────────────────────────────
+  // Max 8 words per chunk. Break early at sentence-ending punctuation
+  // (only if chunk has at least 3 words — avoids tiny orphan chunks).
+  const chunks = [];
+  let current  = [];
+  captions.forEach((cap) => {
+    current.push(cap);
+    const isBreak = /[.,!?;]$/.test(cap.word);
+    if ((isBreak && current.length >= 3) || current.length >= 8) {
+      chunks.push([...current]);
+      current = [];
+    }
+  });
+  if (current.length > 0) chunks.push(current);
+
+  // ── Find active chunk ──────────────────────────────────────────────────────
+  // A chunk becomes active once we reach its first word's start time.
+  // Walk forward — last matched index wins (chunk stays active until next starts).
+  let activeChunkIdx = 0;
+  chunks.forEach((chunk, idx) => {
+    if (currentSec >= chunk[0].start) activeChunkIdx = idx;
+  });
+
+  const activeChunk = chunks[activeChunkIdx] || [];
+
+  // Hide before the first caption word starts
+  if (captions.length === 0 || currentSec < captions[0].start) return null;
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
@@ -325,21 +352,25 @@ function KaraokeCaptions({ captions, fps, brand }) {
             lineHeight:    1.4,
           }}
         >
-          {captions.map((cap, i) => (
-            <span
-              key={i}
-              style={{
-                display:    'inline',
-                fontFamily: `${fontFamily}, Arial, sans-serif`,
-                fontSize:   56,
-                fontWeight: i === activeIdx ? 800 : 600,
-                color:      i === activeIdx ? '#00D4FF' : '#FFFFFF',
-                opacity:    i < activeIdx ? 0.55 : 1,
-              }}
-            >
-              {cap.word}{' '}
-            </span>
-          ))}
+          {activeChunk.map((cap, i) => {
+            const isActive = currentSec >= cap.start && currentSec < cap.end;
+            const isPast   = currentSec >= cap.end;
+            return (
+              <span
+                key={i}
+                style={{
+                  display:    'inline',
+                  fontFamily: `${fontFamily}, Arial, sans-serif`,
+                  fontSize:   56,
+                  fontWeight: isActive ? 800 : 600,
+                  color:      isActive ? '#00D4FF' : '#FFFFFF',
+                  opacity:    isPast ? 0.55 : 1,
+                }}
+              >
+                {cap.word}{' '}
+              </span>
+            );
+          })}
         </div>
       </div>
     </AbsoluteFill>

@@ -1,14 +1,15 @@
 // ── renderer.js ───────────────────────────────────────────────────────────
 // Bundles the Remotion compositions and renders a scene_json to MP4.
 // Routes to the correct composition based on render_type:
-//   CHART_SCENE      → ChartScene      (1080×1920, 30fps, 9:16 vertical)
-//   REPURPOSE_SCENE  → RepurposeScene  (1080×1920, 30fps, 9:16 vertical)
-//   COMPOSITION      → SceneComposer   (1408×768,  24fps, 16:9)
-//   MOTION_GRAPHIC   → SceneComposer   (1408×768,  24fps, 16:9)
-//   anything else    → SceneComposer   (safe fallback)
+//   CHART_SCENE          → ChartScene          (1080×1920, 30fps, 9:16 vertical)
+//   REPURPOSE_SCENE      → RepurposeScene       (1080×1920, 30fps, 9:16 vertical)
+//   REPURPOSE_LONG_FORM  → RepurposeLongForm    (1920×1080, 30fps, 16:9 landscape)
+//   COMPOSITION          → SceneComposer        (1408×768,  24fps, 16:9)
+//   MOTION_GRAPHIC       → SceneComposer        (1408×768,  24fps, 16:9)
+//   anything else        → SceneComposer        (safe fallback)
 //
-// REPURPOSE_SCENE FILE HANDLING:
-//   The scene_json for REPURPOSE_SCENE contains base64-encoded files
+// REPURPOSE_SCENE / REPURPOSE_LONG_FORM FILE HANDLING:
+//   The scene_json for both repurpose types contains base64-encoded files
 //   (source video, audio chunks, CTA banner, BGM) because n8n and this
 //   sidecar are separate Railway services with no shared filesystem.
 //   setupRepurposeFiles() decodes those files into a temp dir under
@@ -79,6 +80,14 @@ function getCompositionSpec(sceneJson) {
       fps:    sceneJson.fps       || 30,
     };
   }
+  if (sceneJson.render_type === 'REPURPOSE_LONG_FORM') {
+    return {
+      id:     'RepurposeLongForm',
+      width:  sceneJson.canvas?.w || 1920,
+      height: sceneJson.canvas?.h || 1080,
+      fps:    sceneJson.fps       || 30,
+    };
+  }
   // Default: SceneComposer handles COMPOSITION, MOTION_GRAPHIC, and anything else
   return {
     id:     'SceneComposer',
@@ -88,8 +97,8 @@ function getCompositionSpec(sceneJson) {
   };
 }
 
-// ── REPURPOSE_SCENE file setup ────────────────────────────────────────────
-// Called only when render_type === 'REPURPOSE_SCENE'.
+// ── REPURPOSE file setup ──────────────────────────────────────────────────
+// Called for both REPURPOSE_SCENE and REPURPOSE_LONG_FORM.
 //
 // WHY THIS IS NEEDED:
 //   n8n and this sidecar are separate Railway services — no shared /tmp.
@@ -116,7 +125,7 @@ async function setupRepurposeFiles(sceneJson) {
 
   fs.mkdirSync(tmpDir, { recursive: true });
 
-  console.log(`[renderer] REPURPOSE_SCENE file setup → ${tmpDir}`);
+  console.log(`[renderer] ${sceneJson.render_type} file setup → ${tmpDir}`);
 
   // ── Decode source video ─────────────────────────────────────────────────
   const srcVideoPath = path.join(tmpDir, 'source.mp4');
@@ -155,7 +164,7 @@ async function setupRepurposeFiles(sceneJson) {
   //   or n8n connection issue), we pick a random track from the local
   //   assets/bgm/ folder baked into the Docker image.
   //
-  // If both fail, bg_music_url stays null and RepurposeScene.jsx renders
+  // If both fail, bg_music_url stays null and the composition renders
   //   the video without background music — non-fatal.
   let bg_music_url = null;
 
@@ -199,7 +208,7 @@ async function setupRepurposeFiles(sceneJson) {
     ...rest,
     source_video_url: `${baseUrl}/source.mp4`,
     cta_banner_url:   `${baseUrl}/cta_banner.png`,
-    bg_music_url,     // null if both primary and fallback failed — handled in RepurposeScene.jsx
+    bg_music_url,     // null if both primary and fallback failed — handled in composition
     sequence:         transformedSequence,
   };
 
@@ -216,12 +225,17 @@ async function renderScene(sceneJson) {
   const bp   = await getBundle();
   const spec = getCompositionSpec(sceneJson);
 
-  // ── REPURPOSE_SCENE: decode base64 files into temp dir ─────────────────
+  // ── REPURPOSE types: decode base64 files into temp dir ─────────────────
+  // Both REPURPOSE_SCENE and REPURPOSE_LONG_FORM share the same file setup
+  // logic — same base64 payload format, same temp dir / static serving pattern.
   // All other render types pass through unchanged.
   let activeSceneJson = sceneJson;
   let cleanupDir      = null;
 
-  if (sceneJson.render_type === 'REPURPOSE_SCENE') {
+  if (
+    sceneJson.render_type === 'REPURPOSE_SCENE' ||
+    sceneJson.render_type === 'REPURPOSE_LONG_FORM'
+  ) {
     const setup     = await setupRepurposeFiles(sceneJson);
     activeSceneJson = setup.sceneJson;
     cleanupDir      = setup.cleanupDir;
@@ -294,7 +308,7 @@ async function renderScene(sceneJson) {
   const buffer = fs.readFileSync(outPath);
   fs.unlinkSync(outPath);
 
-  // ── Clean up REPURPOSE_SCENE temp files ─────────────────────────────────
+  // ── Clean up repurpose temp files ────────────────────────────────────────
   // Source video + audio chunks + BGM can be large. Delete immediately after
   // the render buffer is in memory to avoid filling the Railway volume.
   if (cleanupDir) {

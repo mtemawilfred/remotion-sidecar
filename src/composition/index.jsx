@@ -1,20 +1,23 @@
 // ── composition/index.jsx ─────────────────────────────────────────────────
 // Remotion entry point.
-// Registers THREE compositions:
-//   1. SceneComposer    — existing: COMPOSITION and MOTION_GRAPHIC render types
-//   2. ChartScene       — existing: CHART_SCENE (9:16 animated candlestick charts)
-//   3. RepurposeScene   — NEW: REPURPOSE_SCENE (freeze-and-explain video repurposing)
+// Registers FOUR compositions:
+//   1. SceneComposer       — existing: COMPOSITION and MOTION_GRAPHIC render types
+//   2. ChartScene          — existing: CHART_SCENE (9:16 animated candlestick charts)
+//   3. RepurposeScene      — existing: REPURPOSE_SCENE (freeze-and-explain, 9:16)
+//   4. RepurposeLongForm   — NEW: REPURPOSE_LONG_FORM (freeze-and-explain, 16:9 YouTube)
 //
 // renderer.js routes to the correct composition based on render_type in scene_json.
 // Dimensions and FPS per composition:
-//   SceneComposer   — 1408×768  @ 24fps  (16:9 landscape — WF2 long-form)
-//   ChartScene      — 1080×1920 @ 30fps  (9:16 vertical  — WF-B short-form)
-//   RepurposeScene  — 1080×1920 @ 30fps  (9:16 vertical  — video repurposing)
+//   SceneComposer        — 1408×768  @ 24fps  (16:9 landscape — WF2 long-form)
+//   ChartScene           — 1080×1920 @ 30fps  (9:16 vertical  — WF-B short-form)
+//   RepurposeScene       — 1080×1920 @ 30fps  (9:16 vertical  — video repurposing)
+//   RepurposeLongForm    — 1920×1080 @ 30fps  (16:9 landscape — long-form YouTube)
 
 import { Composition, registerRoot } from 'remotion';
-import { SceneComposer }    from '../components/SceneComposer';
-import { ChartScene }       from '../components/chart/ChartScene';
-import { RepurposeScene }   from '../components/RepurposeScene';
+import { SceneComposer }      from '../components/SceneComposer';
+import { ChartScene }         from '../components/chart/ChartScene';
+import { RepurposeScene }     from '../components/RepurposeScene';
+import { RepurposeLongForm }  from '../components/RepurposeLongForm';
 
 // ── Default props for SceneComposer (Remotion Studio preview only) ─────────
 const DEFAULT_SCENE = {
@@ -95,19 +98,51 @@ const DEFAULT_CHART_SCENE = {
 
 // ── Default props for RepurposeScene (Remotion Studio preview only) ────────
 // Minimal sample sequence: one live block followed by one freeze block.
-// The video URL is a public domain sample so Studio preview works without
-// a real source video.
 const DEFAULT_REPURPOSE_SCENE = {
   render_type:      'REPURPOSE_SCENE',
   scene_id:         'preview',
   folder_name:      'preview',
   duration_ms:      8000,
-  // Use a placeholder URL for Studio preview.
-  // Real renders supply actual localhost URLs via renderer.js file setup.
   source_video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
   cta_banner_url:   '',
   fps:              30,
   canvas:           { w: 1080, h: 1920 },
+  brand: {
+    primary:      '#1B2A4A',
+    accent:       '#C9A84C',
+    font_heading: 'Oswald',
+    font_body:    'Inter',
+  },
+  sequence: [
+    { type: 'live',   start_time: 0, end_time: 3 },
+    {
+      type:       'freeze',
+      segment_id: 1,
+      timestamp:  3,
+      audio_url:  '',
+      duration:   5,
+      event_type: 'commentary',
+      show_cta:   false,
+      captions: [
+        { word: 'This',  start: 0.0, end: 0.4  },
+        { word: 'is',    start: 0.4, end: 0.7  },
+        { word: 'the',   start: 0.7, end: 1.0  },
+        { word: 'setup', start: 1.0, end: 1.5  },
+      ],
+    },
+  ],
+};
+
+// ── Default props for RepurposeLongForm (Remotion Studio preview only) ─────
+const DEFAULT_REPURPOSE_LONG_FORM = {
+  render_type:      'REPURPOSE_LONG_FORM',
+  scene_id:         'preview_lf',
+  folder_name:      'preview_lf',
+  duration_ms:      8000,
+  source_video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+  cta_banner_url:   '',
+  fps:              30,
+  canvas:           { w: 1920, h: 1080 },
   brand: {
     primary:      '#1B2A4A',
     accent:       '#C9A84C',
@@ -169,9 +204,9 @@ export const RemotionRoot = () => {
           Handles render_type: 'REPURPOSE_SCENE'.
           Canvas: 1080×1920 (9:16 vertical) — video repurposing pipeline.
           Freeze-and-explain: source video pauses at event timestamps while
-          voiceover plays with karaoke captions, then resumes.
+          voiceover plays with karaoke captions (2 lines at a time), then resumes.
           30fps to match source video smoothness.
-          durationInFrames=1 is a placeholder — renderer.js always overrides
+          durationInFrames=300 is a placeholder — renderer.js always overrides
           this with the real duration calculated from the sequence. */}
       <Composition
         id="RepurposeScene"
@@ -181,6 +216,23 @@ export const RemotionRoot = () => {
         fps={30}
         durationInFrames={300}
         defaultProps={{ sceneJson: DEFAULT_REPURPOSE_SCENE }}
+      />
+
+      {/* ── Composition 4: RepurposeLongForm ──────────────────────────────
+          Handles render_type: 'REPURPOSE_LONG_FORM'.
+          Canvas: 1920×1080 (16:9 landscape) — long-form YouTube repurposing.
+          Same freeze-and-explain logic as RepurposeScene.
+          Captions pinned to bottom (40px) — standard subtitle position.
+          30fps to match source video smoothness.
+          durationInFrames=300 is a placeholder — renderer.js always overrides. */}
+      <Composition
+        id="RepurposeLongForm"
+        component={RepurposeLongForm}
+        width={1920}
+        height={1080}
+        fps={30}
+        durationInFrames={300}
+        defaultProps={{ sceneJson: DEFAULT_REPURPOSE_LONG_FORM }}
       />
     </>
   );
