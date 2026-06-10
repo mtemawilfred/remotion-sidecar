@@ -26,10 +26,24 @@ const LIGHT_BG = '#E8ECF4';
 
 export const BaseLayer = ({ sceneJson, brand }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, durationInFrames } = useVideoConfig();
 
   const base       = sceneJson.layers?.base || {};
   const renderType = sceneJson.render_type;
+
+  // ── Camera push-in / parallax on the base layer ──────────────────────────
+  // Mirrors CharacterLayer.motion so the whole frame breathes together.
+  //   'push_in'  → 1.00→1.03 zoom across the scene
+  //   'parallax' → slightly stronger drift for image backgrounds
+  // Absent → static (scale 1.0). Applied to the layer wrapper below.
+  let baseScale = 1.0;
+  if (base.motion === 'push_in') {
+    baseScale = interpolate(frame, [0, durationInFrames], [1.0, 1.03],
+      { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  } else if (base.motion === 'parallax') {
+    baseScale = interpolate(frame, [0, durationInFrames], [1.0, 1.06],
+      { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  }
 
   // ── Blur effect ─────────────────────────────────────────────────────────
   let blurAmount = 0;
@@ -45,15 +59,22 @@ export const BaseLayer = ({ sceneJson, brand }) => {
   }
 
   // ── IMAGE scene — Gemini-generated illustration ──────────────────────────
-  if (renderType === 'IMAGE' && sceneJson.assets?.base_image_b64) {
+  // Fires when EITHER the render_type is IMAGE (legacy) OR the base layer is
+  // explicitly typed 'image' (NARRATOR_EXPLAINER cinematic plates), as long as
+  // a base64 image is actually present in assets.
+  if (
+    (renderType === 'IMAGE' || base.type === 'image') &&
+    sceneJson.assets?.base_image_b64
+  ) {
     return (
-      <AbsoluteFill>
+      <AbsoluteFill style={{ overflow: 'hidden' }}>
         <Img
           src={`data:image/png;base64,${sceneJson.assets.base_image_b64}`}
           style={{
             width:     '100%',
             height:    '100%',
             objectFit: 'cover',
+            transform: `scale(${baseScale})`,
             filter:    blurAmount > 0 ? `blur(${blurAmount}px)` : 'none',
           }}
         />
@@ -78,6 +99,8 @@ export const BaseLayer = ({ sceneJson, brand }) => {
   }
 
   return (
-    <AbsoluteFill style={{ backgroundColor: bgColor }} />
+    <AbsoluteFill style={{ overflow: 'hidden' }}>
+      <AbsoluteFill style={{ backgroundColor: bgColor, transform: `scale(${baseScale})` }} />
+    </AbsoluteFill>
   );
 };

@@ -25,7 +25,7 @@ import {
 
 export const CharacterLayer = ({ sceneJson, brand }) => {
   const frame = useCurrentFrame();
-  const { fps, durationInFrames } = useVideoConfig();
+  const { fps, durationInFrames, width } = useVideoConfig();
 
   const character = sceneJson.layers?.character;
 
@@ -79,7 +79,9 @@ export const CharacterLayer = ({ sceneJson, brand }) => {
     // Slide in from the specified direction
     const dir         = character.slide_direction || 'from_right';
     const slideFrames = Math.round(((character.slide_duration_ms || 500) / 1000) * fps);
-    const offset      = dir === 'from_right' ? 1408 : -1408;
+    // Use the actual canvas width so this works for both landscape (1408) and
+    // vertical (1080) compositions.
+    const offset      = dir === 'from_right' ? width : -width;
     translateX = interpolate(
       localFrame,
       [0, slideFrames],
@@ -93,6 +95,24 @@ export const CharacterLayer = ({ sceneJson, brand }) => {
     const cycleFrames = fps * 1.5;
     const pulse = Math.sin((localFrame / cycleFrames) * Math.PI * 2);
     scaleValue = scale + pulse * 0.03;
+  }
+
+  // ── Camera motion (slow push-in / parallax drift) ─────────────────────────
+  // character.motion is a CAMERA move applied on top of the pose animation:
+  //   'push_in'  → gentle continuous zoom 1.00→1.03 across the scene (keeps a
+  //                static narrator frame alive — the RedPill signature move)
+  //   'parallax' → same slow zoom + a tiny vertical drift for depth
+  // Absent → no camera move (pose animation only).
+  if (character.motion === 'push_in' || character.motion === 'parallax') {
+    const pushScale = interpolate(frame, [0, durationInFrames], [1.0, 1.03], {
+      extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+    });
+    scaleValue = scaleValue * pushScale;
+    if (character.motion === 'parallax') {
+      translateY += interpolate(frame, [0, durationInFrames], [0, -18], {
+        extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
+      });
+    }
   }
 
   return (

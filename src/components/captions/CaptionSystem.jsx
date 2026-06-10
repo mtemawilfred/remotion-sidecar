@@ -37,6 +37,7 @@ export const WordByWordCaption = ({
   group_size      = 4,
   font_size       = 52,
   position_y_pct  = 0.82,
+  style,
   brand,
 }) => {
   const frame = useCurrentFrame();
@@ -71,6 +72,49 @@ export const WordByWordCaption = ({
   const fadeIn          = interpolate(localF, [0, 6], [0, 1], {
     extrapolateLeft: 'clamp', extrapolateRight: 'clamp',
   });
+
+  // ── 'pill' style — black rounded box, white bold text, centered. ──────────
+  // The RedPill narrator-explainer look. Anything else keeps the original
+  // white-text-with-shadow default so existing pipelines are unaffected.
+  const isPill = (style === 'pill');
+
+  if (isPill) {
+    return (
+      <AbsoluteFill style={{ pointerEvents: 'none' }}>
+        <div
+          style={{
+            position:       'absolute',
+            left:           0,
+            top:            height * position_y_pct,
+            width,
+            display:        'flex',
+            justifyContent: 'center',
+            opacity:        fadeIn,
+            padding:        '0 40px',
+          }}
+        >
+          <div
+            style={{
+              background:    'rgba(0,0,0,0.78)',
+              borderRadius:  18,
+              padding:       '10px 26px',
+              fontFamily:    brand?.font_heading || 'Oswald',
+              fontSize:      font_size,
+              fontWeight:    700,
+              color:         '#FFFFFF',
+              textAlign:     'center',
+              textTransform: 'none',
+              letterSpacing: 0.5,
+              lineHeight:    1.2,
+              maxWidth:      '90%',
+            }}
+          >
+            {text}
+          </div>
+        </div>
+      </AbsoluteFill>
+    );
+  }
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>

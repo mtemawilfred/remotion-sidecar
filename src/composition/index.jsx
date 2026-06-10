@@ -1,6 +1,6 @@
 // ── composition/index.jsx ─────────────────────────────────────────────────
 // Remotion entry point.
-// Registers FOUR compositions:
+// Registers FIVE compositions:
 //   1. SceneComposer       — existing: COMPOSITION and MOTION_GRAPHIC render types
 //   2. ChartScene          — existing: CHART_SCENE (9:16 animated candlestick charts)
 //   3. RepurposeScene      — existing: REPURPOSE_SCENE (freeze-and-explain, 9:16)
@@ -42,6 +42,44 @@ const DEFAULT_SCENE = {
   },
   assets: { sound_effects: [] },
   transition_in:  { type: 'fade', duration_ms: 400 },
+  transition_out: { type: 'fade', duration_ms: 300 },
+};
+
+// ── Default props for SceneComposerVertical (Remotion Studio preview only) ──
+// NARRATOR_EXPLAINER format: faceless Sovereign pose over a flat base, black
+// word-by-word caption pill, top-third emphasis title, corner icons, slow push-in.
+// Same scene shape as SceneComposer — only the canvas (1080×1920) differs.
+const DEFAULT_SCENE_VERTICAL = {
+  scene_id:    0,
+  render_type: 'NARRATOR_EXPLAINER',
+  duration_ms: 5000,
+  brand: {
+    primary:      '#1A1A1A',
+    secondary:    '#F2F2F2',
+    accent:       '#9B1B1B',
+    danger:       '#9B1B1B',
+    success:      '#166534',
+    font_heading: 'Montserrat',
+    font_body:    'Montserrat',
+    bgm_track:    'classical_dark',
+  },
+  stt_timestamps: [
+    { word: 'GOOD',   start_ms: 0,   end_ms: 680  },
+    { word: 'PEOPLE', start_ms: 680, end_ms: 1360 },
+    { word: 'ARE',    start_ms: 1400, end_ms: 1560 },
+    { word: 'RARE',   start_ms: 1960, end_ms: 2560 },
+  ],
+  layers: {
+    base:      { type: 'color', color: '#F2F2F2', motion: 'push_in' },
+    character: null,
+    elements: [
+      { component: 'SectionTitle', mode: 'overlay', title: 'Good People Got PUNISHED', keyword: 'PUNISHED', start_ms: 200 },
+      { component: 'WordByWordCaption', style: 'pill', position_y_pct: 0.5, group_size: 4 },
+    ],
+    text:      [],
+  },
+  assets: { sound_effects: [] },
+  transition_in:  { type: 'fade', duration_ms: 300 },
   transition_out: { type: 'fade', duration_ms: 300 },
 };
 
@@ -200,7 +238,24 @@ export const RemotionRoot = () => {
         defaultProps={{ sceneJson: DEFAULT_CHART_SCENE }}
       />
 
-      {/* ── Composition 3: RepurposeScene ─────────────────────────────────
+      {/* ── Composition 3: SceneComposerVertical ──────────────────────────
+          Handles render_type: 'NARRATOR_EXPLAINER'.
+          Canvas: 1080×1920 (9:16 vertical) — RedPill faceless-narrator shorts.
+          Reuses the SAME SceneComposer 4-layer engine as the landscape
+          composition; only the dimensions/fps differ. 30fps for smooth push-in.
+          durationInFrames=150 is a placeholder — renderer.js always overrides
+          this with the real per-scene duration from duration_ms. */}
+      <Composition
+        id="SceneComposerVertical"
+        component={SceneComposer}
+        width={1080}
+        height={1920}
+        fps={30}
+        durationInFrames={150}
+        defaultProps={{ sceneJson: DEFAULT_SCENE_VERTICAL }}
+      />
+
+      {/* ── Composition 4: RepurposeScene ─────────────────────────────────
           Handles render_type: 'REPURPOSE_SCENE'.
           Canvas: 1080×1920 (9:16 vertical) — video repurposing pipeline.
           Freeze-and-explain: source video pauses at event timestamps while
@@ -218,7 +273,7 @@ export const RemotionRoot = () => {
         defaultProps={{ sceneJson: DEFAULT_REPURPOSE_SCENE }}
       />
 
-      {/* ── Composition 4: RepurposeLongForm ──────────────────────────────
+      {/* ── Composition 5: RepurposeLongForm ──────────────────────────────
           Handles render_type: 'REPURPOSE_LONG_FORM'.
           Canvas: 1920×1080 (16:9 landscape) — long-form YouTube repurposing.
           Same freeze-and-explain logic as RepurposeScene.

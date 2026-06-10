@@ -2,6 +2,7 @@
 // Bundles the Remotion compositions and renders a scene_json to MP4.
 // Routes to the correct composition based on render_type:
 //   CHART_SCENE          → ChartScene          (1080×1920, 30fps, 9:16 vertical)
+//   NARRATOR_EXPLAINER   → SceneComposerVertical(1080×1920, 30fps, 9:16 vertical)
 //   REPURPOSE_SCENE      → RepurposeScene       (1080×1920, 30fps, 9:16 vertical)
 //   REPURPOSE_LONG_FORM  → RepurposeLongForm    (1920×1080, 30fps, 16:9 landscape)
 //   COMPOSITION          → SceneComposer        (1408×768,  24fps, 16:9)
@@ -86,6 +87,19 @@ function getCompositionSpec(sceneJson) {
       width:  sceneJson.canvas?.w || 1920,
       height: sceneJson.canvas?.h || 1080,
       fps:    sceneJson.fps       || 30,
+    };
+  }
+  // NARRATOR_EXPLAINER (RedPill faceless-narrator short-form) → vertical 9:16.
+  // Reuses the SceneComposer 4-layer engine but at 1080×1920 @ 30fps via the
+  // dedicated SceneComposerVertical composition registered in composition/index.jsx.
+  // IMPORTANT: routing keys on render_type (NOT orientation) — this matches the
+  // existing router pattern and what Workflow B's Build Scene Payload actually sends.
+  if (sceneJson.render_type === 'NARRATOR_EXPLAINER') {
+    return {
+      id:     'SceneComposerVertical',
+      width:  sceneJson.width  || 1080,
+      height: sceneJson.height || 1920,
+      fps:    sceneJson.fps    || 30,
     };
   }
   // Default: SceneComposer handles COMPOSITION, MOTION_GRAPHIC, and anything else
