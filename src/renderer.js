@@ -234,6 +234,43 @@ async function setupRepurposeFiles(sceneJson) {
   };
 }
 
+// ── Narrator audio normalization (SFX 404-proofing) ────────────────────────
+// SceneComposer plays SFX via staticFile('assets/sfx/<file>'). Those names MUST
+// be real files baked into the image, or Remotion 404s and the whole scene render
+// aborts (this is what killed scene 1 on 'rise_tone' — no .mp3, and 4 of 5 names
+// didn't exist). This makes the narrator path only ever reference files that exist:
+// append .mp3 if missing, and DROP any effect whose file is not on disk (an unknown
+// name like 'low_hum' is skipped, not fatal). Script-driven SFX still play.
+//
+// NOTE: BGM is intentionally NOT handled here. One continuous background track is
+// muxed once over the whole video at Workflow B's ffmpeg stitch stage (master doc
+// 13-D/13-J) — per-scene BGM would restart at every cut. B sends brand.bgm_track
+// = null so SceneComposer plays no per-scene music.
+function normalizeNarratorAudio(sceneJson) {
+  const sj = {
+    ...sceneJson,
+    assets: { ...(sceneJson.assets || {}) },
+  };
+
+  // ── SFX: keep only files that exist in assets/sfx/ ───────────────────────
+  try {
+    const sfxDir = path.resolve(__dirname, '../assets/sfx');
+    const have   = new Set(fs.readdirSync(sfxDir).filter(f => f.endsWith('.mp3')));
+    sj.assets.sound_effects = (sj.assets.sound_effects || [])
+      .map(s => ({ ...s, file: s.file.endsWith('.mp3') ? s.file : `${s.file}.mp3` }))
+      .filter(s => {
+        const ok = have.has(s.file);
+        if (!ok) console.warn(`[renderer] SFX skipped (not in assets/sfx): ${s.file}`);
+        return ok;
+      });
+  } catch (err) {
+    console.warn(`[renderer] SFX normalize failed (non-fatal): ${err.message}`);
+    sj.assets.sound_effects = [];   // safest: render silent rather than 404
+  }
+
+  return sj;
+}
+
 // ── Main render function ───────────────────────────────────────────────────
 async function renderScene(sceneJson) {
   const bp   = await getBundle();
@@ -253,6 +290,13 @@ async function renderScene(sceneJson) {
     const setup     = await setupRepurposeFiles(sceneJson);
     activeSceneJson = setup.sceneJson;
     cleanupDir      = setup.cleanupDir;
+  }
+
+  // ── NARRATOR_EXPLAINER: 404-proof SFX + seeded random BGM ──────────────
+  // (See normalizeNarratorAudio above.) Only touches narrator scenes; every
+  // other render type is unchanged.
+  if (sceneJson.render_type === 'NARRATOR_EXPLAINER') {
+    activeSceneJson = normalizeNarratorAudio(activeSceneJson);
   }
 
   // ── WHY THE DURATION WAS ALWAYS 10 SECONDS ────────────────────────────
