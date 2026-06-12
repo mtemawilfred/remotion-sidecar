@@ -18,6 +18,7 @@ import { SceneComposer }      from '../components/SceneComposer';
 import { ChartScene }         from '../components/chart/ChartScene';
 import { RepurposeScene }     from '../components/RepurposeScene';
 import { RepurposeLongForm }  from '../components/RepurposeLongForm';
+import { VideoComposer }      from '../components/video/VideoComposer';
 
 // ── Default props for SceneComposer (Remotion Studio preview only) ─────────
 const DEFAULT_SCENE = {
@@ -207,6 +208,20 @@ const DEFAULT_REPURPOSE_LONG_FORM = {
   ],
 };
 
+
+// ── Default props for VideoComposer (v3 single-timeline; Studio preview only) ──
+const DEFAULT_VIDEO = {
+  video_id: 'preview', width: 1080, height: 1920, fps: 30, total_frames: 90,
+  theme: { primary:'#1A1A1A', secondary:'#F2F2F2', accent:'#9B1B1B', title_color:'#1A1A1A', keyword_color:'#9B1B1B', caption_style:'pill', font_body:'Montserrat' },
+  assets: {}, audio: { voiceover: null, bgm: null, sfx: [], master: { enabled: false } },
+  layers: [
+    { id:'bg', kind:'background', z:0, frameStart:0, frameEnd:90, camera_locked:false, background:{ type:'cinematic' } },
+    { id:'emph', kind:'emphasis', z:80, frameStart:5, frameEnd:90, camera_locked:false, title:'GOING EXTINCT', keyword:'EXTINCT', importance:'critical', color:'#1A1A1A', keyword_color:'#9B1B1B', entrance:{ kind:'word_build', wordStaggerMs:90, perWord:'pop' } },
+    { id:'cap', kind:'caption', z:90, frameStart:0, frameEnd:90, camera_locked:false, keyword_color:'#9B1B1B', groups:[{ text:'GOOD PEOPLE EXTINCT', startFrame:0, endFrame:90, words:[{word:'GOOD',startFrame:0,endFrame:30,keyword:false},{word:'PEOPLE',startFrame:30,endFrame:60,keyword:false},{word:'EXTINCT',startFrame:60,endFrame:90,keyword:true}] }] },
+  ],
+  camera: [{ frameStart:0, frameEnd:90, from:{scale:1,x:0}, to:{scale:1.08,x:0}, originRef:'character', easing:'easeInOutCubic' }],
+};
+
 export const RemotionRoot = () => {
   return (
     <>
@@ -288,6 +303,21 @@ export const RemotionRoot = () => {
         fps={30}
         durationInFrames={300}
         defaultProps={{ sceneJson: DEFAULT_REPURPOSE_LONG_FORM }}
+      />
+
+      {/* ── Composition 6: VideoComposer ──────────────────────────────────
+          v3 SINGLE-TIMELINE NARRATOR_EXPLAINER. Renders the WHOLE video in one
+          pass from Workflow B's resolved payload (one POST -> one MP4). Routed
+          via the /render-video endpoint (renderer.renderVideo), NOT /render-scene.
+          durationInFrames is a placeholder — renderVideo overrides with total_frames. */}
+      <Composition
+        id="VideoComposer"
+        component={VideoComposer}
+        width={1080}
+        height={1920}
+        fps={30}
+        durationInFrames={90}
+        defaultProps={{ payload: DEFAULT_VIDEO }}
       />
     </>
   );

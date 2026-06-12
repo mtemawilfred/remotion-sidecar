@@ -1,7 +1,7 @@
 // ── server.js ─────────────────────────────────────────────────────────────
 const express  = require('express');
 const path     = require('path');
-const { renderScene } = require('./renderer');
+const { renderScene, renderVideo } = require('./renderer');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -63,6 +63,29 @@ app.post('/render-scene', async (req, res) => {
       message:  err.message,
       scene_id: scene_json.scene_id
     });
+  }
+});
+
+
+// ── v3 single-timeline render endpoint ─────────────────────────────────────
+// Workflow B v3 POSTs ONE fully-resolved render_payload here and gets ONE MP4.
+// The sidecar fetches+caches the URL assets, then renders VideoComposer in a
+// single pass (no per-scene loop, no ffmpeg stitch).
+app.post('/render-video', async (req, res) => {
+  const payload = req.body && (req.body.render_payload || req.body);
+  if (!payload || !Array.isArray(payload.layers)) {
+    return res.status(400).json({ error: 'Missing/invalid render_payload (need layers[])' });
+  }
+  console.log(`[render-video] ${payload.video_id} | ${payload.total_frames} frames | ${payload.layers.length} layers`);
+  try {
+    const mp4 = await renderVideo(payload);
+    res.set('Content-Type', 'video/mp4');
+    res.set('Content-Disposition', `attachment; filename="${(payload.video_id||'video')}_final.mp4"`);
+    res.send(mp4);
+    console.log(`[render-video] ${payload.video_id} complete — ${mp4.length} bytes`);
+  } catch (err) {
+    console.error(`[render-video] ${payload.video_id} failed:`, err.message);
+    res.status(500).json({ error: 'Render failed', message: err.message, video_id: payload.video_id });
   }
 });
 

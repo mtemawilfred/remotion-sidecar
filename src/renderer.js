@@ -27,6 +27,7 @@
 const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
+const axios = require('axios');
 
 const { bundle }                         = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
@@ -382,4 +383,149 @@ async function renderScene(sceneJson) {
   return buffer;
 }
 
-module.exports = { renderScene };
+
+// ════════════════════════════════════════════════════════════════════════════
+// v3 SINGLE-TIMELINE PATH — renderVideo()
+// Workflow B v3 sends ONE fully-resolved render_payload (layers[] + camera[] +
+// audio + URL assets). This renders the WHOLE video in one pass via VideoComposer.
+// The sidecar owns the ASSET CACHE: each unique asset URL is downloaded ONCE into
+// a temp dir and served locally (Drive urls aren't reliably fetchable from headless
+// Chromium). Builtins are drawn as glyphs (no fetch). Per spec v3 §8.
+// ════════════════════════════════════════════════════════════════════════════
+
+const SFX_ALIAS = {
+  impact_hard:'impact_deep', impact_soft:'pop_medium', low_drone:'impact_deep',
+  rise_tone:'rise_tone', whoosh:'whoosh_fast', ding:'glass_ding', pop:'pop_medium',
+};
+
+function localBgmFallback(PORT) {
+  try {
+    const bgmDir = path.resolve(__dirname, '../assets/bgm');
+    const files  = fs.readdirSync(bgmDir).filter(f => f.endsWith('.mp3'));
+    if (!files.length) return null;
+    const pick = files[Math.floor(Math.random() * files.length)];
+    const url  = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(pick)}`;
+    console.log(`[render-video] BGM fallback (local): ${pick}`);
+    return { url, localUrl: url, gain: 0.15, loop: true };
+  } catch (e) { return null; }
+}
+
+function normalizeVideoSfx(sfx) {
+  let have = new Set();
+  try { have = new Set(fs.readdirSync(path.resolve(__dirname, '../assets/sfx')).filter(f => f.endsWith('.mp3'))); } catch (e) {}
+  return (sfx || [])
+    .map(s => {
+      const name = SFX_ALIAS[s.file] || s.file;
+      const file = String(name).endsWith('.mp3') ? name : `${name}.mp3`;
+      return { ...s, file };
+    })
+    .filter(s => {
+      const ok = have.has(s.file);
+      if (!ok) console.warn(`[render-video] SFX skipped (not in assets/sfx): ${s.file}`);
+      return ok;
+    });
+}
+
+// Download each unique asset URL once -> temp dir -> local express URL. Dedup by url.
+async function setupVideoAssets(payload) {
+  const PORT    = process.env.PORT || 3000;
+  const dirName = `${payload.video_id || 'video'}_${Date.now()}`;
+  const tmpDir  = path.resolve(__dirname, '../tmp_renders', dirName);
+  const baseUrl = `http://localhost:${PORT}/public/tmp_renders/${dirName}`;
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  const cache = new Map();   // url -> localUrl (the asset cache: one download per unique url)
+  let counter = 0;
+  async function fetchOnce(url, ext) {
+    if (!url) return null;
+    if (cache.has(url)) return cache.get(url);   // dedup (persistent assets reuse same instance)
+    const fname = `asset_${counter++}.${ext || 'bin'}`;
+    const fp    = path.join(tmpDir, fname);
+    const resp  = await axios.get(url, { responseType: 'arraybuffer', maxRedirects: 5, timeout: 60000 });
+    const ct    = String(resp.headers['content-type'] || '');
+    if (ct.includes('text/html')) {
+      throw new Error(`Asset URL returned HTML, not a file — check Drive sharing ("anyone with link") or auth: ${url}`);
+    }
+    fs.writeFileSync(fp, Buffer.from(resp.data));
+    const local = `${baseUrl}/${fname}`;
+    cache.set(url, local);
+    return local;
+  }
+
+  // images (icons that are builtins are skipped — drawn as glyphs)
+  const assets = { ...(payload.assets || {}) };
+  for (const id of Object.keys(assets)) {
+    const a = assets[id];
+    if (a && a.type === 'image' && a.url) assets[id] = { ...a, localUrl: await fetchOnce(a.url, 'png') };
+  }
+
+  // audio
+  const audio = { ...(payload.audio || {}) };
+  if (audio.voiceover && audio.voiceover.url) {
+    audio.voiceover = { ...audio.voiceover, localUrl: await fetchOnce(audio.voiceover.url, 'wav') };
+  }
+  if (audio.bgm && audio.bgm.url) {
+    try { audio.bgm = { ...audio.bgm, localUrl: await fetchOnce(audio.bgm.url, 'mp3') }; }
+    catch (e) { console.warn(`[render-video] BGM fetch failed (${e.message}); local fallback`); audio.bgm = localBgmFallback(PORT); }
+  } else if (!audio.bgm) {
+    audio.bgm = localBgmFallback(PORT);
+  }
+  audio.sfx = normalizeVideoSfx(audio.sfx);
+
+  console.log(`[render-video] assets cached: ${cache.size} unique downloaded -> ${tmpDir}`);
+  return { payload: { ...payload, assets, audio }, cleanupDir: tmpDir };
+}
+
+// Optional loudnorm master pass (GAP-7). Only runs when audio.master.enabled.
+// Uses the ffmpeg binary bundled with @remotion/renderer; non-fatal if unavailable.
+async function applyLoudnorm(inPath) {
+  try {
+    const { exec } = require('child_process');
+    let ffmpegPath = 'ffmpeg';
+    try { ffmpegPath = require('@remotion/renderer').ensureFfmpeg ? 'ffmpeg' : 'ffmpeg'; } catch (e) {}
+    const outPath = inPath.replace(/\.mp4$/, '_ln.mp4');
+    await new Promise((resolve, reject) => {
+      exec(`${ffmpegPath} -y -i "${inPath}" -af loudnorm=I=-14:TP=-1.5:LRA=11 -c:v copy "${outPath}"`,
+        (err) => err ? reject(err) : resolve());
+    });
+    fs.renameSync(outPath, inPath);
+    console.log('[render-video] loudnorm master applied');
+  } catch (e) {
+    console.warn(`[render-video] loudnorm skipped (non-fatal): ${e.message}`);
+  }
+}
+
+async function renderVideo(payload) {
+  const bp     = await getBundle();
+  const fps    = payload.fps    || 30;
+  const width  = payload.width  || 1080;
+  const height = payload.height || 1920;
+  const durationInFrames = Math.max(1, payload.total_frames || Math.ceil(((payload.duration_ms || 5000) / 1000) * fps));
+
+  const setup  = await setupVideoAssets(payload);
+  const active = setup.payload;
+
+  console.log(`[render-video] ${active.video_id} | ${width}x${height}@${fps} | ${durationInFrames} frames | layers ${(active.layers||[]).length} | assets ${Object.keys(active.assets||{}).length}`);
+
+  const outPath = path.join(os.tmpdir(), `video_${active.video_id || 'v'}_${Date.now()}.mp4`);
+  const composition = await selectComposition({ serveUrl: bp, id: 'VideoComposer', inputProps: { payload: active } });
+
+  await renderMedia({
+    composition: { ...composition, durationInFrames },
+    serveUrl: bp, codec: 'h264', outputLocation: outPath, inputProps: { payload: active },
+    durationInFrames, fps, width, height,
+    chromiumOptions: { executablePath: process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium', disableWebSecurity: true },
+    onProgress: ({ progress }) => { const p = Math.round(progress * 100); if (p % 25 === 0) console.log(`[render-video] ${active.video_id}: ${p}%`); },
+  });
+
+  if (active.audio && active.audio.master && active.audio.master.enabled) await applyLoudnorm(outPath);
+
+  const buffer = fs.readFileSync(outPath);
+  fs.unlinkSync(outPath);
+  try { fs.rmSync(setup.cleanupDir, { recursive: true, force: true }); } catch (e) {}
+
+  console.log(`[render-video] ${active.video_id} complete — ${buffer.length} bytes`);
+  return buffer;
+}
+
+module.exports = { renderScene, renderVideo };

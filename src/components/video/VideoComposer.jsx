@@ -1,0 +1,177 @@
+// ── video/VideoComposer.jsx ───────────────────────────────────────────────
+// v3 SINGLE-TIMELINE composition for NARRATOR_EXPLAINER. Renders the WHOLE video
+// in one pass from Workflow B's fully-resolved payload (one POST -> one MP4).
+// The sidecar is DUMB: every coordinate, frame range, scale, camera value and
+// animation param was computed by Workflow B. This file only draws + interpolates.
+// Layers are flat + z-ordered + frame-ranged; camera is a continuous track applied
+// to camera_locked layers; captions/emphasis ride above the camera.
+import React from 'react';
+import { AbsoluteFill, useCurrentFrame, useVideoConfig, Img, Audio, Sequence, staticFile, interpolate } from 'remotion';
+import { resolveEntrance, resolveIdle, resolveCamera } from './motion';
+import { loadFont } from '@remotion/google-fonts/Montserrat';
+
+// Load Montserrat at the weights the components actually render (600/700/800).
+// loadFont injects the @font-face AND registers a Remotion delayRender, so frames
+// are not snapshotted before the font is ready in headless Chromium.
+const { fontFamily: MONTSERRAT } = loadFont('normal', { weights: ['600', '700', '800'], subsets: ['latin'] });
+
+const W = 1080, H = 1920;
+const fontStack = () => `${MONTSERRAT}, 'Helvetica Neue', Arial, sans-serif`;
+
+// ── minimal built-in glyph set (icon_name keyed; brand-colored) ────────────
+function Glyph({ name, size, color }) {
+  const s = size || 96, c = color || '#9B1B1B', sw = Math.max(4, s * 0.07);
+  const P = { fill: 'none', stroke: c, strokeWidth: sw, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  const paths = {
+    arrow_down:  <g {...P}><line x1="50" y1="20" x2="50" y2="78"/><polyline points="30,58 50,80 70,58"/></g>,
+    arrow_up:    <g {...P}><line x1="50" y1="80" x2="50" y2="22"/><polyline points="30,42 50,20 70,42"/></g>,
+    money:       <g {...P}><line x1="50" y1="18" x2="50" y2="82"/><path d="M64 32 C64 24 56 22 50 22 C44 22 36 26 36 36 C36 46 50 48 50 48 C50 48 66 50 66 62 C66 72 56 78 50 78 C42 78 36 74 36 66"/></g>,
+    lock:        <g {...P}><rect x="28" y="46" width="44" height="36" rx="6"/><path d="M38 46 V36 a12 12 0 0 1 24 0 V46"/></g>,
+    warning:     <g {...P}><path d="M50 22 L80 76 H20 Z"/><line x1="50" y1="44" x2="50" y2="60"/><circle cx="50" cy="68" r="1.5" fill={c}/></g>,
+    check:       <g {...P}><polyline points="26,52 44,70 76,32"/></g>,
+    cross:       <g {...P}><line x1="32" y1="32" x2="68" y2="68"/><line x1="68" y1="32" x2="32" y2="68"/></g>,
+    heart:       <g {...P}><path d="M50 78 C20 56 26 30 44 30 C50 30 50 36 50 36 C50 36 50 30 56 30 C74 30 80 56 50 78 Z"/></g>,
+    chain:       <g {...P}><rect x="24" y="40" width="28" height="20" rx="10"/><rect x="48" y="40" width="28" height="20" rx="10"/></g>,
+    broken_chain:<g {...P}><rect x="22" y="40" width="22" height="20" rx="10"/><rect x="56" y="40" width="22" height="20" rx="10"/><line x1="46" y1="42" x2="54" y2="58"/></g>,
+    brain:       <g {...P}><path d="M40 30 C30 30 26 40 30 46 C24 50 26 62 34 64 C34 74 48 76 50 68 V32 C48 26 44 30 40 30 Z"/><path d="M60 30 C70 30 74 40 70 46 C76 50 74 62 66 64 C66 74 52 76 50 68"/></g>,
+    clock:       <g {...P}><circle cx="50" cy="50" r="30"/><polyline points="50,32 50,50 64,58"/></g>,
+    mirror:      <g {...P}><ellipse cx="50" cy="46" rx="20" ry="28"/><line x1="50" y1="74" x2="50" y2="84"/><line x1="38" y1="84" x2="62" y2="84"/></g>,
+  };
+  return (
+    <div style={{ width: s, height: s, borderRadius: '50%', background: 'rgba(255,255,255,0.92)', border: `${sw}px solid ${c}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg viewBox="0 0 100 100" width={s * 0.62} height={s * 0.62}>{paths[name] || <circle cx="50" cy="50" r="8" fill={c} />}</svg>
+    </div>
+  );
+}
+
+function BaseLayerV({ layer, theme, frame }) {
+  const bg = layer.background || { type: 'flat' };
+  const drift = (layer.idle && layer.idle.periodFrames) ? 10 * Math.sin((2 * Math.PI * frame) / layer.idle.periodFrames) : 0;
+  if (bg.type === 'cinematic') {
+    return <AbsoluteFill style={{ background: `linear-gradient(180deg, ${theme.primary || '#1A1A1A'} 0%, ${theme.accent || '#9B1B1B'} 150%)`, transform: `translateX(${drift}px)` }} />;
+  }
+  return <AbsoluteFill style={{ backgroundColor: theme.secondary || '#F2F2F2' }} />;
+}
+
+function ImageLayerV({ layer, frame, fps, assets, theme }) {
+  const a = assets[layer.asset_ref];
+  const lo = layer.layout || { x: W / 2, y: H / 2, scale: 0.4 };
+  const local = frame - layer.frameStart;
+  const ent = resolveEntrance(layer.entrance, local, fps);
+  const idle = resolveIdle(layer.idle, frame);
+  const isChar = layer.kind === 'character';
+
+  const height = isChar ? (lo.heightPctTarget || 0.70) * H : undefined;
+  const width  = isChar ? undefined : (lo.scale || 0.4) * W;
+
+  const x = lo.x + ent.x + idle.x;
+  const y = lo.y + ent.y + idle.y;
+  const scale = ent.scale * (1 + idle.scale);
+  const rot = ent.rotation + idle.rotation;
+  const anchorY = (isChar && lo.bottomAnchored) ? '-100%' : '-50%';
+  const glow = idle.glow ? `drop-shadow(0 0 ${14 * idle.glow}px ${theme.accent || '#9B1B1B'})` : 'none';
+
+  let content = null;
+  if (a && a.type === 'builtin') content = <Glyph name={a.name} size={(width || height || 96)} color={theme.accent} />;
+  else if (a && (a.localUrl || a.url)) {
+    const imgStyle = isChar
+      ? { height, width: 'auto', objectFit: 'contain', display: 'block' }
+      : { width, height: 'auto', objectFit: 'contain', display: 'block' };
+    if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
+    content = <Img src={a.localUrl || a.url} style={imgStyle} />;
+  }
+  if (!content) return null;
+
+  return (
+    <div style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%, ${anchorY}) scale(${scale}) rotate(${rot}deg)`, opacity: ent.opacity, filter: glow }}>
+      {content}
+    </div>
+  );
+}
+
+function EmphasisV({ layer, frame, fps, theme }) {
+  const local = frame - layer.frameStart;
+  const ent = layer.entrance || {};
+  const isWordBuild = ent.kind === 'word_build';
+  const stag = Math.max(1, Math.round(((ent.wordStaggerMs || 90) / 1000) * fps));
+  const color = layer.color || theme.title_color || '#1A1A1A';
+  const kw = (layer.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const fontSize = ({ normal: 66, strong: 80, critical: 94 })[layer.importance] || 72;
+  const words = String(layer.title || '').split(' ');
+  return (
+    <div style={{ position: 'absolute', top: '7%', left: 0, right: 0, textAlign: 'center', padding: '0 60px' }}>
+      <div style={{ fontWeight: 800, fontSize, lineHeight: 1.05, color, textTransform: 'uppercase', letterSpacing: '-1px' }}>
+        {words.map((w, i) => {
+          let op = 1, ty = 0;
+          if (isWordBuild) {
+            const wf = local - i * stag;
+            op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+            ty = interpolate(wf, [0, 8], [ent.perWord === 'rise' ? 20 : 0, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+          }
+          const isKw = kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
+          return <span key={i} style={{ display: 'inline-block', margin: '0 10px', opacity: op, transform: `translateY(${ty}px)`, color: isKw ? (layer.keyword_color || theme.accent) : color }}>{w}</span>;
+        })}
+      </div>
+      {layer.subtitle ? <div style={{ fontSize: fontSize * 0.42, color, opacity: 0.85, marginTop: 14, fontWeight: 600, textTransform: 'none' }}>{layer.subtitle}</div> : null}
+    </div>
+  );
+}
+
+function CaptionV({ layer, frame, theme }) {
+  const g = (layer.groups || []).find(gr => frame >= gr.startFrame && frame < gr.endFrame);
+  if (!g) return null;
+  return (
+    <div style={{ position: 'absolute', bottom: '12%', left: 0, right: 0, display: 'flex', justifyContent: 'center' }}>
+      <div style={{ background: 'rgba(18,18,18,0.92)', borderRadius: 18, padding: '14px 30px', maxWidth: '88%' }}>
+        <span style={{ fontWeight: 800, fontSize: 58, textTransform: 'uppercase', letterSpacing: '-0.5px' }}>
+          {g.words.map((w, i) => {
+            const active = frame >= w.startFrame && frame < w.endFrame;
+            const col = w.keyword ? (layer.keyword_color || theme.accent) : (active ? '#fff' : 'rgba(255,255,255,0.82)');
+            return <span key={i} style={{ color: col, margin: '0 6px' }}>{w.word}</span>;
+          })}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AudioTracks({ payload, fps }) {
+  const au = payload.audio || {};
+  return (
+    <>
+      {au.voiceover && (au.voiceover.localUrl || au.voiceover.url) ? <Audio src={au.voiceover.localUrl || au.voiceover.url} volume={au.voiceover.gain != null ? au.voiceover.gain : 1} /> : null}
+      {au.bgm && (au.bgm.localUrl || au.bgm.url) ? <Audio src={au.bgm.localUrl || au.bgm.url} volume={au.bgm.gain != null ? au.bgm.gain : 0.15} loop /> : null}
+      {(au.sfx || []).map((s, i) => {
+        const file = s.file && (s.file.endsWith('.mp3') ? s.file : s.file + '.mp3');
+        const src = s.localUrl || (file ? staticFile('assets/sfx/' + file) : null);
+        return src ? <Sequence key={i} from={s.frame || 0} durationInFrames={Math.round(fps * 2)}><Audio src={src} /></Sequence> : null;
+      })}
+    </>
+  );
+}
+
+export const VideoComposer = ({ payload }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const theme = payload.theme || {};
+  const assets = payload.assets || {};
+  const cam = resolveCamera(payload.camera, frame);
+  const layers = (payload.layers || []).slice().sort((a, b) => (a.z || 0) - (b.z || 0));
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: theme.secondary || '#F2F2F2', fontFamily: fontStack() }}>
+      {layers.map((L, i) => {
+        if (frame < L.frameStart || frame >= L.frameEnd) return null;   // life window
+        let inner = null;
+        if (L.kind === 'background') inner = <BaseLayerV layer={L} theme={theme} frame={frame} />;
+        else if (L.kind === 'visual' || L.kind === 'icon' || L.kind === 'character') inner = <ImageLayerV layer={L} frame={frame} fps={fps} assets={assets} theme={theme} />;
+        else if (L.kind === 'emphasis') inner = <EmphasisV layer={L} frame={frame} fps={fps} theme={theme} />;
+        else if (L.kind === 'caption') inner = <CaptionV layer={L} frame={frame} theme={theme} />;
+        if (!inner) return null;
+        const style = L.camera_locked ? { transform: `scale(${cam.scale}) translateX(${cam.x}px)`, transformOrigin: 'center center' } : undefined;
+        return <AbsoluteFill key={L.id || i} style={style}>{inner}</AbsoluteFill>;
+      })}
+      <AudioTracks payload={payload} fps={fps} />
+    </AbsoluteFill>
+  );
+};
