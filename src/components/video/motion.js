@@ -3,15 +3,19 @@
 // executor: it knows NOTHING about editorial names like "slide_in_left". Workflow B
 // already resolved each entrance/idle into concrete params (from/to, durationFrames,
 // spring/easing). These helpers just run Remotion interpolate/spring on those values.
-import { interpolate, spring, Easing } from 'remotion';
+import { interpolate, spring } from 'remotion';
 
 const EASINGS = {
-  linear:        (t) => t,
-  easeOutCubic:  Easing.out(Easing.cubic),
-  easeInOutCubic:Easing.inOut(Easing.cubic),
-  easeOutQuart:  Easing.out(Easing.quart),
+  linear:         (t) => t,
+  easeOutCubic:   (t) => 1 - Math.pow(1 - t, 3),
+  easeInOutCubic: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+  easeOutQuart:   (t) => 1 - Math.pow(1 - t, 4),
 };
-export function easingFn(name) { return EASINGS[name] || EASINGS.easeOutCubic; }
+// Always returns a real function (interpolate throws if given a non-function easing).
+export function easingFn(name) {
+  const f = EASINGS[name];
+  return typeof f === 'function' ? f : EASINGS.easeOutCubic;
+}
 
 // Entrance -> a transform delta { scale, x, y, opacity, rotation, clip } at localFrame
 // (localFrame = currentFrame - layer.frameStart). Pure params from B; no vocabulary here.

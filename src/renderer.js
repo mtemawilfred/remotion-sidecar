@@ -28,6 +28,7 @@ const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
 const axios = require('axios');
+const { fetchAsset, hasServiceAccount } = require('./lib/driveFetch');
 
 const { bundle }                         = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
@@ -441,12 +442,8 @@ async function setupVideoAssets(payload) {
     if (cache.has(url)) return cache.get(url);   // dedup (persistent assets reuse same instance)
     const fname = `asset_${counter++}.${ext || 'bin'}`;
     const fp    = path.join(tmpDir, fname);
-    const resp  = await axios.get(url, { responseType: 'arraybuffer', maxRedirects: 5, timeout: 60000 });
-    const ct    = String(resp.headers['content-type'] || '');
-    if (ct.includes('text/html')) {
-      throw new Error(`Asset URL returned HTML, not a file — check Drive sharing ("anyone with link") or auth: ${url}`);
-    }
-    fs.writeFileSync(fp, Buffer.from(resp.data));
+    const buf   = await fetchAsset(url);         // authenticated Drive fetch (or public fallback)
+    fs.writeFileSync(fp, buf);
     const local = `${baseUrl}/${fname}`;
     cache.set(url, local);
     return local;
@@ -472,7 +469,7 @@ async function setupVideoAssets(payload) {
   }
   audio.sfx = normalizeVideoSfx(audio.sfx);
 
-  console.log(`[render-video] assets cached: ${cache.size} unique downloaded -> ${tmpDir}`);
+  console.log(`[render-video] auth=${hasServiceAccount() ? 'service-account' : 'public-fallback'} | assets cached: ${cache.size} unique downloaded -> ${tmpDir}`);
   return { payload: { ...payload, assets, audio }, cleanupDir: tmpDir };
 }
 
