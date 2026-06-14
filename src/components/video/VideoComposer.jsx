@@ -135,19 +135,29 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
   const anchorY = (isChar && lo.bottomAnchored) ? '-100%' : '-50%';
   const glow = idle.glow ? `drop-shadow(0 0 ${14 * idle.glow}px ${theme.accent || '#9B1B1B'})` : 'none';
 
+  // v6: a non-character visual renders INSIDE its zone box (boxW x boxH) with objectFit
+  // contain, so it can never overflow its region => disjoint zones guarantee no overlap.
+  const boxW = (!isChar && lo.boxW) ? lo.boxW : width;
+  const boxH = (!isChar && lo.boxH) ? lo.boxH : undefined;
+  const layerOpacity = (lo.opacity != null ? lo.opacity : 1);
+
   let content = null;
-  if (a && a.type === 'builtin') content = <Glyph name={a.name} size={(width || height || 96)} color={theme.accent} />;
+  if (a && a.type === 'builtin') content = <Glyph name={a.name} size={(boxW || height || 96)} color={theme.accent} />;
   else if (a && (a.localUrl || a.url)) {
-    const imgStyle = isChar
-      ? { height, width: 'auto', objectFit: 'contain', display: 'block' }
-      : { width, height: 'auto', objectFit: 'contain', display: 'block' };
-    if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
-    content = <Img src={a.localUrl || a.url} style={imgStyle} />;
+    if (isChar) {
+      const imgStyle = { height, width: 'auto', objectFit: 'contain', display: 'block' };
+      if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
+      content = <Img src={a.localUrl || a.url} style={imgStyle} />;
+    } else {
+      const imgStyle = { width: '100%', height: '100%', objectFit: 'contain', display: 'block' };
+      if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
+      content = <div style={{ width: boxW, height: boxH || 'auto' }}><Img src={a.localUrl || a.url} style={imgStyle} /></div>;
+    }
   }
   if (!content) return null;
 
   return (
-    <div style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%, ${anchorY}) scale(${scale}) rotate(${rot}deg)`, opacity: ent.opacity * rf.opacityMul, filter: glow }}>
+    <div style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%, ${anchorY}) scale(${scale}) rotate(${rot}deg)`, opacity: ent.opacity * rf.opacityMul * layerOpacity, filter: glow }}>
       {content}
     </div>
   );
@@ -163,7 +173,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const fontSize = ({ normal: 66, strong: 80, critical: 94 })[layer.importance] || 72;
   const words = String(layer.title || '').split(' ');
   return (
-    <div style={{ position: 'absolute', top: '7%', left: 0, right: 0, textAlign: 'center', padding: '0 60px' }}>
+    <div style={{ position: 'absolute', top: (layer.titleY != null ? (layer.titleY * 100) + '%' : '7%'), left: 0, right: 0, textAlign: 'center', padding: '0 60px' }}>   /* v6: dynamic title position */
       <div style={{ fontWeight: 800, fontSize, lineHeight: 1.05, color, textTransform: 'uppercase', letterSpacing: '-1px' }}>
         {words.map((w, i) => {
           let op = 1, ty = 0;
