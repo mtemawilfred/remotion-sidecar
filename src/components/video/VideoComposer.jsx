@@ -148,6 +148,10 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
       const imgStyle = { height, width: 'auto', objectFit: 'contain', display: 'block' };
       if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
       content = <Img src={a.localUrl || a.url} style={imgStyle} />;
+    } else if (lo.circle) {
+      // v8: multi-visual list -> circular icon in a bordered circle (objectFit cover)
+      const d = Math.min(boxW, boxH || boxW);
+      content = <div style={{ width: d, height: d, borderRadius: '50%', overflow: 'hidden', border: `${Math.max(3, Math.round(d * 0.045))}px solid ${theme.primary || '#1A1A1A'}`, background: '#fff' }}><Img src={a.localUrl || a.url} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /></div>;
     } else {
       const imgStyle = { width: '100%', height: '100%', objectFit: 'contain', display: 'block' };
       if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
@@ -166,27 +170,67 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
 function EmphasisV({ layer, frame, fps, theme }) {
   const local = frame - layer.frameStart;
   const ent = layer.entrance || {};
-  const isWordBuild = ent.kind === 'word_build';
   const stag = Math.max(1, Math.round(((ent.wordStaggerMs || 90) / 1000) * fps));
   const color = layer.color || theme.title_color || '#1A1A1A';
+  const kwColor = layer.keyword_color || theme.accent;
   const kw = (layer.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const fontSize = ({ normal: 66, strong: 80, critical: 94 })[layer.importance] || 72;
-  const words = String(layer.title || '').split(' ');
-  return (
-    <div style={{ position: 'absolute', top: (layer.titleY != null ? (layer.titleY * 100) + '%' : '7%'), left: 0, right: 0, textAlign: 'center', padding: '0 60px' }}>   /* v6: dynamic title position */
-      <div style={{ fontWeight: 800, fontSize, lineHeight: 1.05, color, textTransform: 'uppercase', letterSpacing: '-1px' }}>
-        {words.map((w, i) => {
-          let op = 1, ty = 0;
-          if (isWordBuild) {
-            const wf = local - i * stag;
-            op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-            ty = interpolate(wf, [0, 8], [ent.perWord === 'rise' ? 20 : 0, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-          }
-          const isKw = kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
-          return <span key={i} style={{ display: 'inline-block', margin: '0 10px', opacity: op, transform: `translateY(${ty}px)`, color: isKw ? (layer.keyword_color || theme.accent) : color }}>{w}</span>;
+  const fontSize = ({ normal: 64, strong: 78, critical: 92 })[layer.importance] || 70;
+  const words = String(layer.title || '').split(/\s+/).filter(Boolean);
+  const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
+  const posStyle = { position: 'absolute', top: (layer.titleY != null ? (layer.titleY * 100) + '%' : '7%'), left: (layer.titleX != null ? (layer.titleX * 100) + '%' : 0), width: (layer.titleW != null ? (layer.titleW * 100) + '%' : '100%'), textAlign: (layer.titleAlign || 'center'), padding: (layer.titleX != null ? '0 14px' : '0 60px') };
+
+  // v9: TITLE LIST — multiple short phrases stack vertically, each pops in as it's spoken and stays.
+  if (Array.isArray(layer.lines) && layer.lines.length > 1) {
+    const N = layer.lines.length;
+    const dur = Math.max(1, (layer.frameEnd || (layer.frameStart + 120)) - layer.frameStart);
+    const step = Math.min(26, Math.max(8, Math.floor(dur / N)));
+    return (
+      <div style={posStyle}>
+        {layer.lines.map((ln, i) => {
+          const lf = local - (ln.atFrame != null ? ln.atFrame : i * step);
+          if (lf < 0) return null;
+          const p = interpolate(lf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+          const sc = 0.82 + 0.18 * p;
+          const lkw = (ln.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const lwords = String(ln.text || '').split(/\s+/).filter(Boolean);
+          return (
+            <div key={i} style={{ transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: Math.round(fontSize * 0.7), lineHeight: 1.18, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6 }}>
+              {lwords.map((w, j) => { const isK = lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw; return <span key={j} style={{ margin: '0 5px', color: isK ? kwColor : color }}>{w}</span>; })}
+            </div>
+          );
         })}
       </div>
-      {layer.subtitle ? <div style={{ fontSize: fontSize * 0.42, color, opacity: 0.85, marginTop: 14, fontWeight: 600, textTransform: 'none' }}>{layer.subtitle}</div> : null}
+    );
+  }
+
+  let inner;
+  if (words.length <= 4) {
+    // SHORT (<=4 words): the whole title POPS in as one unit
+    const p = interpolate(local, [0, 9], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+    const sc = 0.72 + 0.28 * p;
+    inner = (
+      <div style={{ display: 'inline-block', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize, lineHeight: 1.05, textTransform: 'uppercase', letterSpacing: '-1px' }}>
+        {words.map((w, i) => <span key={i} style={{ margin: '0 8px', color: isKwWord(w) ? kwColor : color }}>{w}</span>)}
+      </div>
+    );
+  } else {
+    // LONG (>4 words): big LEAD word + smaller continuation, word-by-word build
+    inner = (
+      <div style={{ fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px' }}>
+        {words.map((w, i) => {
+          const wf = local - i * stag;
+          const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+          const ty = interpolate(wf, [0, 8], [16, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+          const lead = i === 0; const isK = lead || isKwWord(w);
+          return <span key={i} style={{ display: 'inline-block', opacity: op, transform: `translateY(${ty}px)`, color: isK ? kwColor : color, fontSize: lead ? fontSize : Math.round(fontSize * 0.5), margin: '0 6px' }}>{w}</span>;
+        })}
+      </div>
+    );
+  }
+  return (
+    <div style={posStyle}>
+      {inner}
+      {layer.subtitle ? <div style={{ fontSize: fontSize * 0.42, color, opacity: 0.85, marginTop: 10, fontWeight: 600, textTransform: 'none' }}>{layer.subtitle}</div> : null}
     </div>
   );
 }
