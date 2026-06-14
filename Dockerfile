@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y \
     libxfixes3 \
     libxkbcommon0 \
     libxrandr2 \
+    ffmpeg \
     wget \
     ca-certificates \
     --no-install-recommends \
