@@ -158,6 +158,11 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
       content = <div style={{ width: boxW, height: boxH || 'auto' }}><Img src={a.localUrl || a.url} style={imgStyle} /></div>;
     }
   }
+  if (!content && layer.asset_ref) {
+    // v10: asset failed to generate (empty url) but the ref is a built-in glyph name -> draw the glyph instead of a blank
+    const GLYPHS = ['arrow_down','arrow_up','money','lock','warning','check','cross','heart','chain','broken_chain','brain','clock','mirror'];
+    if (GLYPHS.indexOf(layer.asset_ref) !== -1) content = <Glyph name={layer.asset_ref} size={(boxW || height || 140)} color={theme.accent} />;
+  }
   if (!content) return null;
 
   return (
