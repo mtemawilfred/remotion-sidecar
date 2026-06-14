@@ -95,5 +95,23 @@ export function resolveCamera(track, frame) {
   const toX   = (seg.to   && seg.to.x   != null) ? seg.to.x   : fromX;
   // micro-drift so a 'hold' camera never fully dies
   const micro = (seg.microDrift || 0) * Math.sin((2 * Math.PI * frame) / 180);
-  return { scale: fromS + (toS - fromS) * t, x: fromX + (toX - fromX) * t + micro };
+
+  // v5: attention-path travel — ease the camera toward the ACTIVE owner so it 'looks'
+  // at whatever currently owns attention. Subtle + clamped (emil: barely perceptible).
+  let pathX = 0;
+  if (Array.isArray(seg.attentionPath) && seg.attentionPath.length) {
+    const W = 1080, CLAMP = 70;
+    const pts = seg.attentionPath.filter((p) => p.targetX != null);
+    if (pts.length) {
+      let ai = 0;
+      for (let i = 0; i < pts.length; i++) { if (frame >= pts[i].atFrame) ai = i; }
+      const cur = pts[ai], prev = pts[Math.max(0, ai - 1)];
+      const want = (px) => Math.max(-CLAMP, Math.min(CLAMP, (W / 2 - px) * 0.25));
+      const curX = want(cur.targetX), prevX = want(prev.targetX);
+      const span = Math.max(1, cur.atFrame - prev.atFrame);
+      const tt = interpolate(frame, [prev.atFrame, prev.atFrame + Math.min(span, 18)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: easingFn('easeInOutCubic') });
+      pathX = prevX + (curX - prevX) * tt;
+    }
+  }
+  return { scale: fromS + (toS - fromS) * t, x: fromX + (toX - fromX) * t + micro + pathX };
 }
