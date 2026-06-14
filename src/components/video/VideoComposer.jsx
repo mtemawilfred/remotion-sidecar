@@ -5,8 +5,8 @@
 // animation param was computed by Workflow B. This file only draws + interpolates.
 // Layers are flat + z-ordered + frame-ranged; camera is a continuous track applied
 // to camera_locked layers; captions/emphasis ride above the camera.
-import React from 'react';
-import { AbsoluteFill, useCurrentFrame, useVideoConfig, Img, Audio, Sequence, staticFile, interpolate } from 'remotion';
+import React, { useState, useEffect } from 'react';
+import { AbsoluteFill, useCurrentFrame, useVideoConfig, Img, Audio, Sequence, staticFile, interpolate, delayRender, continueRender } from 'remotion';
 import { resolveEntrance, resolveIdle, resolveCamera } from './motion';
 import { loadFont } from '@remotion/google-fonts/Montserrat';
 
@@ -44,13 +44,66 @@ function Glyph({ name, size, color }) {
   );
 }
 
+// v4 (S1): a flat background paints its EXPLICIT color — Workflow B now sends
+// background.color = '#FFFFFF' on every scene. Falls back to theme.bg_color, then
+// white. The cinematic gradient is kept only for legacy payloads with no color.
 function BaseLayerV({ layer, theme, frame }) {
   const bg = layer.background || { type: 'flat' };
   const drift = (layer.idle && layer.idle.periodFrames) ? 10 * Math.sin((2 * Math.PI * frame) / layer.idle.periodFrames) : 0;
-  if (bg.type === 'cinematic') {
+  if (bg.type === 'cinematic' && !bg.color) {
     return <AbsoluteFill style={{ background: `linear-gradient(180deg, ${theme.primary || '#1A1A1A'} 0%, ${theme.accent || '#9B1B1B'} 150%)`, transform: `translateX(${drift}px)` }} />;
   }
-  return <AbsoluteFill style={{ backgroundColor: theme.secondary || '#F2F2F2' }} />;
+  return <AbsoluteFill style={{ backgroundColor: bg.color || theme.bg_color || '#FFFFFF' }} />;
+}
+
+// v4 (S3): trim transparent padding from a character PNG so it bottom-anchors on the
+// VISIBLE pixels (GAP-1: poses rendered small/floating above the bottom edge). Measures
+// the alpha bbox once per src via an offscreen canvas; fully graceful — if the canvas is
+// tainted or the image fails, it returns null and the old behavior is used (never breaks
+// a render). Result cached across frames/scenes.
+const _trimCache = {};
+function useAlphaTrim(src) {
+  const [trim, setTrim] = useState(src && _trimCache[src] !== undefined ? _trimCache[src] : null);
+  const [handle] = useState(() => (src && _trimCache[src] === undefined && typeof window !== 'undefined' ? delayRender(`trim:${src}`) : null));
+  useEffect(() => {
+    if (!src) return;
+    if (_trimCache[src] !== undefined) { setTrim(_trimCache[src]); if (handle != null) continueRender(handle); return; }
+    const done = (t) => { _trimCache[src] = t; setTrim(t); if (handle != null) continueRender(handle); };
+    try {
+      const img = new window.Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+          const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
+          const data = ctx.getImageData(0, 0, c.width, c.height).data;
+          let minY = c.height, maxY = -1;
+          for (let y = 0; y < c.height; y++) {
+            for (let x = 0; x < c.width; x++) { if (data[(y * c.width + x) * 4 + 3] > 12) { if (y < minY) minY = y; if (y > maxY) maxY = y; break; } }
+            if (maxY < y) { for (let x = 0; x < c.width; x++) { if (data[(y * c.width + x) * 4 + 3] > 12) { maxY = y; break; } } }
+          }
+          done(maxY >= minY ? { top: minY / c.height, bottom: 1 - (maxY + 1) / c.height } : null);
+        } catch (e) { done(null); }
+      };
+      img.onerror = () => done(null);
+      img.src = src;
+    } catch (e) { done(null); }
+  }, [src]);
+  return trim;
+}
+
+// v4 (S5): collapse a layer's ownership-decay reframes into scale/opacity multipliers
+// at the current frame. Each decay reframe = { atFrame, scaleMul, opacityMul, durationFrames }.
+function applyReframes(reframes, frame) {
+  let scaleMul = 1, opacityMul = 1;
+  (reframes || []).forEach(r => {
+    if (r.scaleMul == null && r.opacityMul == null) return;       // spatial reframe (handled by camera/layout) — skip
+    const dur = Math.max(1, r.durationFrames || 10);
+    const t = Math.min(1, Math.max(0, (frame - r.atFrame) / dur));
+    if (t <= 0) return;
+    if (r.scaleMul   != null) scaleMul   *= 1 + (r.scaleMul   - 1) * t;
+    if (r.opacityMul != null) opacityMul *= 1 + (r.opacityMul - 1) * t;
+  });
+  return { scaleMul, opacityMul };
 }
 
 function ImageLayerV({ layer, frame, fps, assets, theme }) {
@@ -61,12 +114,23 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
   const idle = resolveIdle(layer.idle, frame);
   const isChar = layer.kind === 'character';
 
-  const height = isChar ? (lo.heightPctTarget || 0.70) * H : undefined;
+  // v4 (S3): scale up so the VISIBLE (trimmed) character fills heightPctTarget, then
+  // shift down by the trimmed bottom padding so the content sits on the bottom edge.
+  const trim = useAlphaTrim((isChar && a && (a.localUrl || a.url)) ? (a.localUrl || a.url) : null);
+  const contentV = trim ? Math.max(0.2, 1 - (trim.top || 0) - (trim.bottom || 0)) : 1;
+
+  const height = isChar ? ((lo.heightPctTarget || 0.70) * H) / contentV : undefined;
   const width  = isChar ? undefined : (lo.scale || 0.4) * W;
+  const trimShiftY = (isChar && trim && height) ? (trim.bottom || 0) * height : 0;
+
+  // v4 (S5): ownership-decay reframes — previous owner recedes (scale/opacity down) at
+  // the handoff frame and stays mounted (no fade-out). Spatial reframes (with `to`) are
+  // ignored here.
+  const rf = applyReframes(layer.reframes, frame);
 
   const x = lo.x + ent.x + idle.x;
-  const y = lo.y + ent.y + idle.y;
-  const scale = ent.scale * (1 + idle.scale);
+  const y = lo.y + ent.y + idle.y + trimShiftY;
+  const scale = ent.scale * (1 + idle.scale) * rf.scaleMul;
   const rot = ent.rotation + idle.rotation;
   const anchorY = (isChar && lo.bottomAnchored) ? '-100%' : '-50%';
   const glow = idle.glow ? `drop-shadow(0 0 ${14 * idle.glow}px ${theme.accent || '#9B1B1B'})` : 'none';
@@ -83,7 +147,7 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
   if (!content) return null;
 
   return (
-    <div style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%, ${anchorY}) scale(${scale}) rotate(${rot}deg)`, opacity: ent.opacity, filter: glow }}>
+    <div style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%, ${anchorY}) scale(${scale}) rotate(${rot}deg)`, opacity: ent.opacity * rf.opacityMul, filter: glow }}>
       {content}
     </div>
   );
@@ -122,11 +186,12 @@ function CaptionV({ layer, frame, theme }) {
   if (!g) return null;
   return (
     <div style={{ position: 'absolute', bottom: '12%', left: 0, right: 0, display: 'flex', justifyContent: 'center' }}>
-      <div style={{ background: 'rgba(18,18,18,0.92)', borderRadius: 18, padding: '14px 30px', maxWidth: '88%' }}>
+      <div style={{ background: layer.pill_fill || 'rgba(18,18,18,0.92)', borderRadius: 18, padding: '14px 30px', maxWidth: '88%' }}>
         <span style={{ fontWeight: 800, fontSize: 58, textTransform: 'uppercase', letterSpacing: '-0.5px' }}>
           {g.words.map((w, i) => {
             const active = frame >= w.startFrame && frame < w.endFrame;
-            const col = w.keyword ? (layer.keyword_color || theme.accent) : (active ? '#fff' : 'rgba(255,255,255,0.82)');
+            const baseCol = layer.color || '#fff';   // v4 (S2): readable on the white background (dark pill, light text)
+            const col = w.keyword ? (layer.keyword_color || theme.accent) : (active ? baseCol : 'rgba(255,255,255,0.82)');
             return <span key={i} style={{ color: col, margin: '0 6px' }}>{w.word}</span>;
           })}
         </span>
@@ -159,7 +224,7 @@ export const VideoComposer = ({ payload }) => {
   const layers = (payload.layers || []).slice().sort((a, b) => (a.z || 0) - (b.z || 0));
 
   return (
-    <AbsoluteFill style={{ backgroundColor: theme.secondary || '#F2F2F2', fontFamily: fontStack() }}>
+    <AbsoluteFill style={{ backgroundColor: theme.bg_color || theme.secondary || '#FFFFFF', fontFamily: fontStack() }}>
       {layers.map((L, i) => {
         if (frame < L.frameStart || frame >= L.frameEnd) return null;   // life window
         let inner = null;

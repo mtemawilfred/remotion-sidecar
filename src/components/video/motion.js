@@ -51,9 +51,10 @@ export function resolveEntrance(entrance, localFrame, fps) {
       else if (entrance.prop === 'y') out.y = (entrance.fromOffset || 0) * (1 - tw);
       break;
     }
-    case 'draw_path': {                           // graphs/charts: left->right wipe reveal
+    case 'draw_path': {                           // graphs/charts: left->right wipe reveal + subtle build
       const p = interpolate(localFrame, [0, dur], [0, 100], { extrapolateLeft:'clamp', extrapolateRight:'clamp', easing: easingFn('easeOutQuart') });
       out.clip = `inset(0 ${100 - p}% 0 0)`;      // reveal from the left edge
+      out.scale = interpolate(localFrame, [0, dur], [0.94, 1], { extrapolateLeft:'clamp', extrapolateRight:'clamp', easing: easingFn('easeOutCubic') });  // v4 (S4): not a flat wipe (pair with the element's glow_pulse idle)
       break;
     }
     default: break;
