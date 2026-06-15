@@ -187,7 +187,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const fitFont = (str, base) => {
     const ws = String(str || '').split(/\s+/).filter(Boolean);
     const longest = ws.reduce((m, w) => Math.max(m, w.length), 1);
-    const byWord = Math.floor(containerW / (longest * 0.60)); // ~0.60*fs per bold-uppercase char
+    const byWord = Math.floor(containerW / (longest * 0.62)); // ~0.62*fs per bold-uppercase char (a touch conservative)
     return Math.max(30, Math.min(base, byWord));
   };
 
@@ -218,7 +218,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
           const lwords = String(ln.text || '').split(/\s+/).filter(Boolean);
           const lfs = fitFont(ln.text, Math.round(baseFs * 0.72));
           return (
-            <div key={i} style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, wordBreak: 'break-word' }}>
+            <div key={i} style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, overflowWrap: 'normal', wordBreak: 'normal'}}>
               {lwords.map((w, j) => <span key={j} style={{ margin: '0 5px', color: (lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw) ? kwColor : color }}>{w}</span>)}
             </div>
           );
@@ -236,7 +236,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
     const sc = 0.78 + 0.22 * p;
     return (
       <div style={posStyle}>
-        <div style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', wordBreak: 'break-word' }}>
+        <div style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', overflowWrap: 'normal', wordBreak: 'normal'}}>
           {words.map((w, i) => <span key={i} style={{ margin: '0 8px', color: isKwWord(w) ? kwColor : color }}>{w}</span>)}
         </div>
         {layer.subtitle ? <div style={{ fontSize: fs * 0.42, color, opacity: 0.85, marginTop: 8, fontWeight: 600 }}>{layer.subtitle}</div> : null}
@@ -247,7 +247,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   // LONG (>4 words): big lead/keyword word + smaller continuation, word-by-word build.
   return (
     <div style={posStyle}>
-      <div style={{ width: '100%', fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, wordBreak: 'break-word' }}>
+      <div style={{ width: '100%', fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, overflowWrap: 'normal', wordBreak: 'normal'}}>
         {words.map((w, i) => {
           const wf = local - i * stag;
           const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
@@ -261,13 +261,14 @@ function EmphasisV({ layer, frame, fps, theme }) {
   );
 }
 
+
 function CaptionV({ layer, frame, theme }) {
   const g = (layer.groups || []).find(gr => frame >= gr.startFrame && frame < gr.endFrame);
   if (!g) return null;
   return (
     <div style={{ position: 'absolute', bottom: '12%', left: 0, right: 0, display: 'flex', justifyContent: 'center' }}>
       <div style={{ background: layer.pill_fill || 'rgba(18,18,18,0.92)', borderRadius: 18, padding: '14px 30px', maxWidth: '88%' }}>
-        <span style={{ fontWeight: 800, fontSize: 58, textTransform: 'uppercase', letterSpacing: '-0.5px' }}>
+        <span style={{ fontWeight: 700, fontSize: 30, letterSpacing: '-0.3px' }}>
           {g.words.map((w, i) => {
             const active = frame >= w.startFrame && frame < w.endFrame;
             const baseCol = layer.color || '#fff';   // v4 (S2): readable on the white background (dark pill, light text)
