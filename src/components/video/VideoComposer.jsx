@@ -181,11 +181,10 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const kw = (layer.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const baseFs = ({ normal: 64, strong: 78, critical: 92 })[layer.importance] || 70;
   const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
-  // Thin WHITE stroke that follows each letter's OUTLINE (outer edges + inner counters like O/A).
-  // paintOrder:'stroke' draws it BEHIND the fill so the letter colour stays full.
-  const STROKE = { WebkitTextStroke: '1.2px #FFFFFF', paintOrder: 'stroke' };
+  // 3px white stroke along each letter's outline (outer + inner counters), behind the fill.
+  const STROKE = { WebkitTextStroke: '3px #FFFFFF', paintOrder: 'stroke' };
 
-  // FIT: size so the longest word fits the width, then shrink until the wrapped text fits the band height.
+  // FIT: longest word fits the width; then shrink until the wrapped text fits the band height.
   const containerW = ((layer.titleW != null ? layer.titleW : 0.88) * 1080) - 28;
   const regionH = (layer.titleH != null ? layer.titleH : 0.12) * 1920;
   const fitFont = (str, base) => {
@@ -202,6 +201,21 @@ function EmphasisV({ layer, frame, fps, theme }) {
     return Math.max(26, fs);
   };
 
+  // render words with REAL spaces between them (break opportunities -> wraps at whole words)
+  const renderWords = (wordList, kwStr, animated) => wordList.flatMap((w, i) => {
+    const isK = animated ? (i === 0 || (kwStr && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kwStr))
+                         : (kwStr && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kwStr);
+    let st = { color: isK ? kwColor : color };
+    if (animated) {
+      const wf = local - i * stag;
+      const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+      const ty = interpolate(wf, [0, 8], [16, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+      st = { ...st, display: 'inline-block', opacity: op, transform: `translateY(${ty}px)`, fontSize: i === 0 ? undefined : 'inherit' };
+    }
+    const span = <span key={i} style={st}>{w}</span>;
+    return i === 0 ? [span] : [' ', span];
+  });
+
   const posStyle = {
     position: 'absolute',
     top: (layer.titleY != null ? (layer.titleY * 100) + '%' : '7%'),
@@ -212,6 +226,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
     textAlign: 'center', padding: (layer.titleX != null ? '0 14px' : '0 20px'),
     boxSizing: 'border-box', overflow: 'hidden',
   };
+  const textBox = { width: '100%', whiteSpace: 'normal', overflowWrap: 'normal', wordBreak: 'normal', wordSpacing: '6px' };
 
   // TITLE LIST — short phrases stack, each pops in as spoken and stays.
   if (Array.isArray(layer.lines) && layer.lines.length > 1) {
@@ -229,8 +244,8 @@ function EmphasisV({ layer, frame, fps, theme }) {
           const lwords = String(ln.text || '').split(/\s+/).filter(Boolean);
           const lfs = fitFont(ln.text, Math.round(baseFs * 0.72));
           return (
-            <div key={i} style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, overflowWrap: 'normal', wordBreak: 'normal', ...STROKE }}>
-              {lwords.map((w, j) => <span key={j} style={{ margin: '0 5px', color: (lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw) ? kwColor : color }}>{w}</span>)}
+            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, ...STROKE }}>
+              {renderWords(lwords, lkw, false)}
             </div>
           );
         })}
@@ -247,8 +262,8 @@ function EmphasisV({ layer, frame, fps, theme }) {
     const sc = 0.78 + 0.22 * p;
     return (
       <div style={posStyle}>
-        <div style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', overflowWrap: 'normal', wordBreak: 'normal', ...STROKE }}>
-          {words.map((w, i) => <span key={i} style={{ margin: '0 8px', color: isKwWord(w) ? kwColor : color }}>{w}</span>)}
+        <div style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', ...STROKE }}>
+          {renderWords(words, kw, false)}
         </div>
         {layer.subtitle ? <div style={{ fontSize: fs * 0.42, color, opacity: 0.85, marginTop: 8, fontWeight: 600 }}>{layer.subtitle}</div> : null}
       </div>
@@ -258,13 +273,14 @@ function EmphasisV({ layer, frame, fps, theme }) {
   // LONG (>4 words): big lead/keyword word + smaller continuation, word-by-word build.
   return (
     <div style={posStyle}>
-      <div style={{ width: '100%', fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, overflowWrap: 'normal', wordBreak: 'normal', ...STROKE }}>
-        {words.map((w, i) => {
+      <div style={{ ...textBox, fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, ...STROKE }}>
+        {words.flatMap((w, i) => {
           const wf = local - i * stag;
           const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
           const ty = interpolate(wf, [0, 8], [16, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
           const lead = i === 0; const isK = lead || isKwWord(w);
-          return <span key={i} style={{ display: 'inline-block', opacity: op, transform: `translateY(${ty}px)`, color: isK ? kwColor : color, fontSize: lead ? fs : Math.round(fs * 0.6), margin: '0 6px' }}>{w}</span>;
+          const span = <span key={i} style={{ display: 'inline-block', opacity: op, transform: `translateY(${ty}px)`, color: isK ? kwColor : color, fontSize: lead ? fs : Math.round(fs * 0.6) }}>{w}</span>;
+          return i === 0 ? [span] : [' ', span];
         })}
       </div>
       {layer.subtitle ? <div style={{ fontSize: fs * 0.42, color, opacity: 0.85, marginTop: 8, fontWeight: 600 }}>{layer.subtitle}</div> : null}
