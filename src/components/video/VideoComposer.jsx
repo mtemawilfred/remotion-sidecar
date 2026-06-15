@@ -181,14 +181,25 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const kw = (layer.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const baseFs = ({ normal: 64, strong: 78, critical: 92 })[layer.importance] || 70;
   const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
+  // Thin WHITE stroke that follows each letter's OUTLINE (outer edges + inner counters like O/A).
+  // paintOrder:'stroke' draws it BEHIND the fill so the letter colour stays full.
+  const STROKE = { WebkitTextStroke: '1.2px #FFFFFF', paintOrder: 'stroke' };
 
-  // FIT: size the font so the LONGEST word fits the container width; wrapping handles the rest.
+  // FIT: size so the longest word fits the width, then shrink until the wrapped text fits the band height.
   const containerW = ((layer.titleW != null ? layer.titleW : 0.88) * 1080) - 28;
+  const regionH = (layer.titleH != null ? layer.titleH : 0.12) * 1920;
   const fitFont = (str, base) => {
     const ws = String(str || '').split(/\s+/).filter(Boolean);
     const longest = ws.reduce((m, w) => Math.max(m, w.length), 1);
-    const byWord = Math.floor(containerW / (longest * 0.62)); // ~0.62*fs per bold-uppercase char (a touch conservative)
-    return Math.max(30, Math.min(base, byWord));
+    const totalChars = ws.reduce((a, w) => a + w.length + 1, 0);
+    let fs = Math.min(base, Math.floor(containerW / (longest * 0.62)));
+    for (let k = 0; k < 30 && fs > 26; k++) {
+      const charsPerLine = Math.max(1, Math.floor(containerW / (fs * 0.58)));
+      const lines = Math.ceil(totalChars / charsPerLine);
+      if (lines * fs * 1.2 <= regionH) break;
+      fs -= 3;
+    }
+    return Math.max(26, fs);
   };
 
   const posStyle = {
@@ -202,7 +213,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
     boxSizing: 'border-box', overflow: 'hidden',
   };
 
-  // TITLE LIST — short phrases stack vertically, each pops in as spoken and stays.
+  // TITLE LIST — short phrases stack, each pops in as spoken and stays.
   if (Array.isArray(layer.lines) && layer.lines.length > 1) {
     const N = layer.lines.length;
     const dur = Math.max(1, (layer.frameEnd || (layer.frameStart + 120)) - layer.frameStart);
@@ -218,7 +229,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
           const lwords = String(ln.text || '').split(/\s+/).filter(Boolean);
           const lfs = fitFont(ln.text, Math.round(baseFs * 0.72));
           return (
-            <div key={i} style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, overflowWrap: 'normal', wordBreak: 'normal'}}>
+            <div key={i} style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, overflowWrap: 'normal', wordBreak: 'normal', ...STROKE }}>
               {lwords.map((w, j) => <span key={j} style={{ margin: '0 5px', color: (lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw) ? kwColor : color }}>{w}</span>)}
             </div>
           );
@@ -230,13 +241,13 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const words = String(layer.title || '').split(/\s+/).filter(Boolean);
   const fs = fitFont(layer.title, baseFs);
 
-  // SHORT (<=4 words): whole title pops in as a unit.
+  // SHORT (<=4 words): whole title pops in.
   if (words.length <= 4) {
     const p = interpolate(local, [0, 9], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
     const sc = 0.78 + 0.22 * p;
     return (
       <div style={posStyle}>
-        <div style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', overflowWrap: 'normal', wordBreak: 'normal'}}>
+        <div style={{ width: '100%', transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', overflowWrap: 'normal', wordBreak: 'normal', ...STROKE }}>
           {words.map((w, i) => <span key={i} style={{ margin: '0 8px', color: isKwWord(w) ? kwColor : color }}>{w}</span>)}
         </div>
         {layer.subtitle ? <div style={{ fontSize: fs * 0.42, color, opacity: 0.85, marginTop: 8, fontWeight: 600 }}>{layer.subtitle}</div> : null}
@@ -247,7 +258,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   // LONG (>4 words): big lead/keyword word + smaller continuation, word-by-word build.
   return (
     <div style={posStyle}>
-      <div style={{ width: '100%', fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, overflowWrap: 'normal', wordBreak: 'normal'}}>
+      <div style={{ width: '100%', fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, overflowWrap: 'normal', wordBreak: 'normal', ...STROKE }}>
         {words.map((w, i) => {
           const wf = local - i * stag;
           const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
