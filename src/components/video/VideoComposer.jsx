@@ -182,7 +182,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const fontSize = ({ normal: 64, strong: 78, critical: 92 })[layer.importance] || 70;
   const words = String(layer.title || '').split(/\s+/).filter(Boolean);
   const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
-  const posStyle = { position: 'absolute', top: (layer.titleY != null ? (layer.titleY * 100) + '%' : '7%'), left: (layer.titleX != null ? (layer.titleX * 100) + '%' : 0), width: (layer.titleW != null ? (layer.titleW * 100) + '%' : '100%'), textAlign: (layer.titleAlign || 'center'), padding: (layer.titleX != null ? '0 14px' : '0 60px') };
+  const posStyle = { position: 'absolute', top: (layer.titleY != null ? (layer.titleY * 100) + '%' : '7%'), left: (layer.titleX != null ? (layer.titleX * 100) + '%' : 0), width: (layer.titleW != null ? (layer.titleW * 100) + '%' : '100%'), height: (layer.titleH != null ? (layer.titleH * 100) + '%' : 'auto'), display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: (layer.titleX != null ? '0 14px' : '0 40px') };
 
   // v9: TITLE LIST — multiple short phrases stack vertically, each pops in as it's spoken and stays.
   if (Array.isArray(layer.lines) && layer.lines.length > 1) {
