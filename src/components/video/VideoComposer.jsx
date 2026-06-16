@@ -173,48 +173,38 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
 }
 
 function EmphasisV({ layer, frame, fps, theme }) {
+  const FORCE_UPPER = false;                       // <- flip to true to force ALL-CAPS titles
   const local = frame - layer.frameStart;
   const ent = layer.entrance || {};
   const stag = Math.max(1, Math.round(((ent.wordStaggerMs || 90) / 1000) * fps));
   const color = layer.color || theme.title_color || '#1A1A1A';
   const kwColor = layer.keyword_color || theme.accent;
   const kw = (layer.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const baseFs = ({ normal: 64, strong: 78, critical: 92 })[layer.importance] || 70;
   const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
-  // 3px white stroke along each letter's outline (outer + inner counters), behind the fill.
   const STROKE = { WebkitTextStroke: '3px #FFFFFF', paintOrder: 'stroke' };
+  const caseTf = FORCE_UPPER ? 'uppercase' : 'none';
 
-  // FIT: longest word fits the width; then shrink until the wrapped text fits the band height.
+  // region in px (fed from the layout's own title region)
   const containerW = ((layer.titleW != null ? layer.titleW : 0.88) * 1080) - 28;
   const regionH = (layer.titleH != null ? layer.titleH : 0.12) * 1920;
-  const fitFont = (str, base) => {
+
+  // GROW-TO-FILL: largest font where the longest word fits the width AND the wrapped
+  // lines fit the region height. Starts big and steps down until it fits -> fills the box.
+  const fitFont = (str) => {
     const ws = String(str || '').split(/\s+/).filter(Boolean);
     const longest = ws.reduce((m, w) => Math.max(m, w.length), 1);
     const totalChars = ws.reduce((a, w) => a + w.length + 1, 0);
-    let fs = Math.min(base, Math.floor(containerW / (longest * 0.62)));
-    for (let k = 0; k < 30 && fs > 26; k++) {
-      const charsPerLine = Math.max(1, Math.floor(containerW / (fs * 0.58)));
-      const lines = Math.ceil(totalChars / charsPerLine);
-      if (lines * fs * 1.2 <= regionH) break;
-      fs -= 3;
+    let fs = Math.min(240, Math.floor(regionH));
+    for (let k = 0; k < 240 && fs > 18; k++) {
+      const fitsW = longest * fs * 0.60 <= containerW;
+      const charsPerLine = Math.max(1, Math.floor(containerW / (fs * 0.56)));
+      const lines = Math.max(1, Math.ceil(totalChars / charsPerLine));
+      const fitsH = lines * fs * 1.12 <= regionH;
+      if (fitsW && fitsH) break;
+      fs -= 4;
     }
-    return Math.max(26, fs);
+    return Math.max(18, fs);
   };
-
-  // render words with REAL spaces between them (break opportunities -> wraps at whole words)
-  const renderWords = (wordList, kwStr, animated) => wordList.flatMap((w, i) => {
-    const isK = animated ? (i === 0 || (kwStr && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kwStr))
-                         : (kwStr && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kwStr);
-    let st = { color: isK ? kwColor : color };
-    if (animated) {
-      const wf = local - i * stag;
-      const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-      const ty = interpolate(wf, [0, 8], [16, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-      st = { ...st, display: 'inline-block', opacity: op, transform: `translateY(${ty}px)`, fontSize: i === 0 ? undefined : 'inherit' };
-    }
-    const span = <span key={i} style={st}>{w}</span>;
-    return i === 0 ? [span] : [' ', span];
-  });
 
   const posStyle = {
     position: 'absolute',
@@ -223,12 +213,26 @@ function EmphasisV({ layer, frame, fps, theme }) {
     width: (layer.titleW != null ? (layer.titleW * 100) + '%' : '100%'),
     height: (layer.titleH != null ? (layer.titleH * 100) + '%' : 'auto'),
     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-    textAlign: 'center', padding: (layer.titleX != null ? '0 14px' : '0 20px'),
-    boxSizing: 'border-box', overflow: 'hidden',
+    textAlign: 'center', padding: '0 14px', boxSizing: 'border-box', overflow: 'hidden',
   };
-  const textBox = { width: '100%', whiteSpace: 'normal', overflowWrap: 'normal', wordBreak: 'normal', wordSpacing: '6px' };
+  const textBox = { width: '100%', whiteSpace: 'normal', overflowWrap: 'normal', wordBreak: 'normal', wordSpacing: '4px' };
 
-  // TITLE LIST — short phrases stack, each pops in as spoken and stays.
+  // UNIFORM word spans with REAL spaces between them (so the line wraps at whole words).
+  // animated=true -> each word appears in sequence (word-by-word build).
+  const renderWords = (wordList, animated) => wordList.flatMap((w, i) => {
+    const st = { color: isKwWord(w) ? kwColor : color };
+    let style = st;
+    if (animated) {
+      const wf = local - i * stag;
+      const op = interpolate(wf, [0, 7], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+      const ty = interpolate(wf, [0, 7], [14, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+      style = { ...st, display: 'inline-block', opacity: op, transform: `translateY(${ty}px)` };
+    }
+    const span = <span key={i} style={style}>{w}</span>;
+    return i === 0 ? [span] : [' ', span];
+  });
+
+  // TITLE-LIST — short phrases stack, each pops in as spoken and stays.
   if (Array.isArray(layer.lines) && layer.lines.length > 1) {
     const N = layer.lines.length;
     const dur = Math.max(1, (layer.frameEnd || (layer.frameStart + 120)) - layer.frameStart);
@@ -239,13 +243,14 @@ function EmphasisV({ layer, frame, fps, theme }) {
           const lf = local - (ln.atFrame != null ? ln.atFrame : i * step);
           if (lf < 0) return null;
           const p = interpolate(lf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-          const sc = 0.85 + 0.15 * p;
-          const lkw = (ln.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const sc = 0.9 + 0.1 * p;
           const lwords = String(ln.text || '').split(/\s+/).filter(Boolean);
-          const lfs = fitFont(ln.text, Math.round(baseFs * 0.72));
+          const lfs = fitFont(ln.text);
+          const lkw = (ln.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const kwHit = (w) => lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw;
           return (
-            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '-0.5px', marginBottom: 6, ...STROKE }}>
-              {renderWords(lwords, lkw, false)}
+            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.1, textTransform: caseTf, letterSpacing: '-0.5px', marginBottom: 6, ...STROKE }}>
+              {lwords.flatMap((w, k) => { const sp = <span key={k} style={{ color: kwHit(w) ? kwColor : color }}>{w}</span>; return k === 0 ? [sp] : [' ', sp]; })}
             </div>
           );
         })}
@@ -254,36 +259,27 @@ function EmphasisV({ layer, frame, fps, theme }) {
   }
 
   const words = String(layer.title || '').split(/\s+/).filter(Boolean);
-  const fs = fitFont(layer.title, baseFs);
+  const fs = fitFont(layer.title);
 
-  // SHORT (<=4 words): whole title pops in.
-  if (words.length <= 4) {
+  // 3 words or fewer: whole title pops in as a unit.
+  if (words.length <= 3) {
     const p = interpolate(local, [0, 9], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-    const sc = 0.78 + 0.22 * p;
+    const sc = 0.82 + 0.18 * p;
     return (
       <div style={posStyle}>
-        <div style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.06, textTransform: 'uppercase', letterSpacing: '-1px', ...STROKE }}>
-          {renderWords(words, kw, false)}
+        <div style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: fs, lineHeight: 1.08, textTransform: caseTf, letterSpacing: '-1px', ...STROKE }}>
+          {renderWords(words, false)}
         </div>
-        {layer.subtitle ? <div style={{ fontSize: fs * 0.42, color, opacity: 0.85, marginTop: 8, fontWeight: 600 }}>{layer.subtitle}</div> : null}
       </div>
     );
   }
 
-  // LONG (>4 words): big lead/keyword word + smaller continuation, word-by-word build.
+  // MORE than 3 words: word-by-word build, all words the SAME size, filling the region.
   return (
     <div style={posStyle}>
-      <div style={{ ...textBox, fontWeight: 800, lineHeight: 1.12, textTransform: 'uppercase', letterSpacing: '-0.5px', fontSize: fs, ...STROKE }}>
-        {words.flatMap((w, i) => {
-          const wf = local - i * stag;
-          const op = interpolate(wf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-          const ty = interpolate(wf, [0, 8], [16, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-          const lead = i === 0; const isK = lead || isKwWord(w);
-          const span = <span key={i} style={{ display: 'inline-block', opacity: op, transform: `translateY(${ty}px)`, color: isK ? kwColor : color, fontSize: lead ? fs : Math.round(fs * 0.6) }}>{w}</span>;
-          return i === 0 ? [span] : [' ', span];
-        })}
+      <div style={{ ...textBox, fontWeight: 800, fontSize: fs, lineHeight: 1.12, textTransform: caseTf, letterSpacing: '-0.5px', ...STROKE }}>
+        {renderWords(words, true)}
       </div>
-      {layer.subtitle ? <div style={{ fontSize: fs * 0.42, color, opacity: 0.85, marginTop: 8, fontWeight: 600 }}>{layer.subtitle}</div> : null}
     </div>
   );
 }
