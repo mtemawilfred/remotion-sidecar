@@ -189,7 +189,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
   const STROKE = { WebkitTextStroke: '3px #FFFFFF', paintOrder: 'stroke' };
   const caseTf = FORCE_UPPER ? 'uppercase' : 'none';
-  const FONT_FAMILY = (theme && (theme.title_font || theme.font_family)) || 'Inter, system-ui, Arial, sans-serif';
+  const FONT_FAMILY = MONTSERRAT;   // C1 fix: measure the ACTUAL rendered font (Montserrat), not Inter
 
   const containerW = ((layer.titleW != null ? layer.titleW : 0.88) * 1080) - 28;
   const regionH = (layer.titleH != null ? layer.titleH : 0.12) * 1920;
