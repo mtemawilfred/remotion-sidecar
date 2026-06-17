@@ -7,6 +7,7 @@
 // to camera_locked layers; captions/emphasis ride above the camera.
 import React, { useState, useEffect } from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, Img, Audio, Sequence, staticFile, interpolate, delayRender, continueRender } from 'remotion';
+import { measureText } from '@remotion/layout-utils';
 import { resolveEntrance, resolveIdle, resolveCamera } from './motion';
 import { loadFont } from '@remotion/google-fonts/Montserrat';
 
@@ -145,7 +146,9 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
   if (a && a.type === 'builtin') content = <Glyph name={a.name} size={(boxW || height || 96)} color={theme.accent} />;
   else if (a && (a.localUrl || a.url)) {
     if (isChar) {
-      const imgStyle = { height, width: 'auto', objectFit: 'contain', display: 'block' };
+      // C2: clamp the pose WIDTH so a wide pose (extended arm) can never leave the frame.
+      const charMaxW = Math.min(W * 0.96, (lo.scale ? lo.scale * W * 1.6 : W * 0.96));
+      const imgStyle = { height, width: 'auto', maxWidth: charMaxW, objectFit: 'contain', display: 'block' };
       if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
       content = <Img src={a.localUrl || a.url} style={imgStyle} />;
     } else if (lo.circle) {
@@ -153,9 +156,12 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
       const d = Math.min(boxW, boxH || boxW);
       content = <div style={{ width: d, height: d, borderRadius: '50%', overflow: 'hidden', border: `${Math.max(3, Math.round(d * 0.045))}px solid ${theme.primary || '#1A1A1A'}`, background: '#fff' }}><Img src={a.localUrl || a.url} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /></div>;
     } else {
+      // C2: contain the visual inside its box, with the box CLAMPED to the frame so it can never overflow.
+      const vW = Math.min(boxW || width || (W * 0.5), W);
+      const vH = Math.min(boxH || vW, H);
       const imgStyle = { width: '100%', height: '100%', objectFit: 'contain', display: 'block' };
       if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
-      content = <div style={{ width: boxW, height: boxH || 'auto' }}><Img src={a.localUrl || a.url} style={imgStyle} /></div>;
+      content = <div style={{ width: vW, height: vH }}><Img src={a.localUrl || a.url} style={imgStyle} /></div>;
     }
   }
   if (!content && layer.asset_ref) {
@@ -173,7 +179,7 @@ function ImageLayerV({ layer, frame, fps, assets, theme }) {
 }
 
 function EmphasisV({ layer, frame, fps, theme }) {
-  const FORCE_UPPER = false;                       // <- flip to true to force ALL-CAPS titles
+  const FORCE_UPPER = false;
   const local = frame - layer.frameStart;
   const ent = layer.entrance || {};
   const stag = Math.max(1, Math.round(((ent.wordStaggerMs || 90) / 1000) * fps));
@@ -183,27 +189,35 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const isKwWord = (w) => kw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === kw;
   const STROKE = { WebkitTextStroke: '3px #FFFFFF', paintOrder: 'stroke' };
   const caseTf = FORCE_UPPER ? 'uppercase' : 'none';
+  const FONT_FAMILY = (theme && (theme.title_font || theme.font_family)) || 'Inter, system-ui, Arial, sans-serif';
 
-  // region in px (fed from the layout's own title region)
   const containerW = ((layer.titleW != null ? layer.titleW : 0.88) * 1080) - 28;
   const regionH = (layer.titleH != null ? layer.titleH : 0.12) * 1920;
 
-  // GROW-TO-FILL: largest font where the longest word fits the width AND the wrapped
-  // lines fit the region height. Starts big and steps down until it fits -> fills the box.
-  const fitFont = (str) => {
-    const ws = String(str || '').split(/\s+/).filter(Boolean);
-    const longest = ws.reduce((m, w) => Math.max(m, w.length), 1);
-    const totalChars = ws.reduce((a, w) => a + w.length + 1, 0);
-    let fs = Math.min(240, Math.floor(regionH));
-    for (let k = 0; k < 240 && fs > 18; k++) {
-      const fitsW = longest * fs * 0.60 <= containerW;
-      const charsPerLine = Math.max(1, Math.floor(containerW / (fs * 0.56)));
-      const lines = Math.max(1, Math.ceil(totalChars / charsPerLine));
-      const fitsH = lines * fs * 1.12 <= regionH;
-      if (fitsW && fitsH) break;
-      fs -= 4;
+  // ---- MEASURED FIT: width at a reference size, scaled per candidate font size ----
+  const REF = 100;
+  const measureW = (text) => {
+    try {
+      return measureText({ text, fontFamily: FONT_FAMILY, fontSize: REF, fontWeight: 800, letterSpacing: '-0.5px' }).width;
+    } catch (e) {
+      return String(text).length * REF * 0.62;   // conservative fallback (still never crops)
     }
-    return Math.max(18, fs);
+  };
+  const fitFont = (str) => {
+    const words = String(str || '').split(/\s+/).filter(Boolean);
+    if (!words.length) return 24;
+    const longestW = words.reduce((m, w) => Math.max(m, measureW(w)), 1);  // widest single word @REF
+    const fullW = measureW(words.join(' '));                               // one-line width @REF
+    let fs = Math.min(240, Math.floor(regionH));
+    for (let k = 0; k < 340 && fs > 10; k++) {
+      const scale = fs / REF;
+      const fitsW = longestW * scale <= containerW;                        // no word overflows -> never split
+      const lines = Math.max(1, Math.ceil((fullW * scale) / containerW));  // exact-width wrap count
+      const fitsH = lines * fs * 1.18 <= regionH * 0.98;                   // wrapped lines fit height
+      if (fitsW && fitsH) break;
+      fs -= 2;
+    }
+    return Math.max(10, fs);
   };
 
   const posStyle = {
@@ -217,8 +231,6 @@ function EmphasisV({ layer, frame, fps, theme }) {
   };
   const textBox = { width: '100%', whiteSpace: 'normal', overflowWrap: 'normal', wordBreak: 'normal', wordSpacing: '4px' };
 
-  // UNIFORM word spans with REAL spaces between them (so the line wraps at whole words).
-  // animated=true -> each word appears in sequence (word-by-word build).
   const renderWords = (wordList, animated) => wordList.flatMap((w, i) => {
     const st = { color: isKwWord(w) ? kwColor : color };
     let style = st;
@@ -232,7 +244,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
     return i === 0 ? [span] : [' ', span];
   });
 
-  // TITLE-LIST — short phrases stack, each pops in as spoken and stays.
+  // TITLE-LIST — stacked lines.
   if (Array.isArray(layer.lines) && layer.lines.length > 1) {
     const N = layer.lines.length;
     const dur = Math.max(1, (layer.frameEnd || (layer.frameStart + 120)) - layer.frameStart);
@@ -261,7 +273,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const words = String(layer.title || '').split(/\s+/).filter(Boolean);
   const fs = fitFont(layer.title);
 
-  // 3 words or fewer: whole title pops in as a unit.
+  // 3 words or fewer: pop in as a unit.
   if (words.length <= 3) {
     const p = interpolate(local, [0, 9], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
     const sc = 0.82 + 0.18 * p;
@@ -274,7 +286,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
     );
   }
 
-  // MORE than 3 words: word-by-word build, all words the SAME size, filling the region.
+  // >3 words: word-by-word build, uniform size, filling the region.
   return (
     <div style={posStyle}>
       <div style={{ ...textBox, fontWeight: 800, fontSize: fs, lineHeight: 1.12, textTransform: caseTf, letterSpacing: '-0.5px', ...STROKE }}>
@@ -283,7 +295,6 @@ function EmphasisV({ layer, frame, fps, theme }) {
     </div>
   );
 }
-
 
 function CaptionV({ layer, frame, theme }) {
   const g = (layer.groups || []).find(gr => frame >= gr.startFrame && frame < gr.endFrame);
