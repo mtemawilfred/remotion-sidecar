@@ -206,14 +206,26 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const fitFont = (str) => {
     const words = String(str || '').split(/\s+/).filter(Boolean);
     if (!words.length) return 24;
-    const longestW = words.reduce((m, w) => Math.max(m, measureW(w)), 1);  // widest single word @REF
-    const fullW = measureW(words.join(' '));                               // one-line width @REF
+    const wW = words.map(w => measureW(w));                                 // each word width @REF
+    const longestW = wW.reduce((m, x) => Math.max(m, x), 1);
+    const spaceW = Math.max(1, measureW('x x') - measureW('xx'));           // space advance @REF
+    // SIMULATE the real word-wrap (greedy) at a given scale -> EXACT line count, not a ceil() estimate.
+    const countLines = (scale) => {
+      let lines = 1, cur = 0;
+      for (let i = 0; i < wW.length; i++) {
+        const w = wW[i] * scale;
+        if (i === 0) cur = w;
+        else if (cur + spaceW * scale + w <= containerW) cur += spaceW * scale + w;
+        else { lines++; cur = w; }
+      }
+      return lines;
+    };
     let fs = Math.min(240, Math.floor(regionH));
-    for (let k = 0; k < 340 && fs > 10; k++) {
+    for (let k = 0; k < 400 && fs > 10; k++) {
       const scale = fs / REF;
-      const fitsW = longestW * scale <= containerW;                        // no word overflows -> never split
-      const lines = Math.max(1, Math.ceil((fullW * scale) / containerW));  // exact-width wrap count
-      const fitsH = lines * fs * 1.18 <= regionH * 0.98;                   // wrapped lines fit height
+      const fitsW = longestW * scale <= containerW;                        // longest word fits -> never split mid-word
+      const lines = countLines(scale);                                     // ACTUAL wrapped line count
+      const fitsH = lines * fs * 1.2 <= regionH * 0.96;                    // those lines fit the box height (+margin)
       if (fitsW && fitsH) break;
       fs -= 2;
     }
