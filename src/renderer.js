@@ -130,110 +130,120 @@ function getCompositionSpec(sceneJson) {
 //
 // Returns:
 //   { sceneJson: transformedSceneJson, cleanupDir: '/app/tmp_renders/...' }
+// ── renderer.js → REPLACE the existing setupRepurposeFiles() with this ──────
+// Handles BOTH payload shapes:
+//   • NEW masterclass: sceneJson.timeline[]  (REPURPOSE_LONG_FORM)
+//   • OLD freeze/live: sceneJson.sequence[]   (REPURPOSE_SCENE — unchanged)
+// CTA banner + BGM are OPTIONAL (the old version crashed when cta_banner_b64
+// was absent — that was the "Buffer.from(undefined)" 500).
+//
+// Produces the URLs the composition reads: source_video_url, per-segment
+// audio_url, chart.freeze_frame_url, component screenshot_ref_url, sfx[].url,
+// bg_music_url. Everything decoded into a temp dir served by express.
+// ─────────────────────────────────────────────────────────────────────────────
 async function setupRepurposeFiles(sceneJson) {
-  const PORT = process.env.PORT || 3000;
-
-  // Unique temp dir: folder_name + timestamp to avoid collisions under
-  // N8N_CONCURRENCY_PRODUCTION_LIMIT=3 (up to 3 concurrent renders)
+  const PORT    = process.env.PORT || 3000;
   const dirName = `${sceneJson.folder_name}_${Date.now()}`;
   const tmpDir  = path.resolve(__dirname, '../tmp_renders', dirName);
   const baseUrl = `http://localhost:${PORT}/public/tmp_renders/${dirName}`;
-
   fs.mkdirSync(tmpDir, { recursive: true });
 
-  console.log(`[renderer] ${sceneJson.render_type} file setup → ${tmpDir}`);
+  const writeB64 = (b64, name) => {
+    const p = path.join(tmpDir, name);
+    fs.writeFileSync(p, Buffer.from(b64, 'base64'));
+    return `${baseUrl}/${name}`;
+  };
 
-  // ── Decode source video ─────────────────────────────────────────────────
-  const srcVideoPath = path.join(tmpDir, 'source.mp4');
-  fs.writeFileSync(srcVideoPath, Buffer.from(sceneJson.source_video_b64, 'base64'));
-  const srcVideoMB = (fs.statSync(srcVideoPath).size / 1024 / 1024).toFixed(1);
-  console.log(`[renderer] Source video written: ${srcVideoMB} MB`);
+  // ── Source video (required) ──────────────────────────────────────────────
+  if (!sceneJson.source_video_b64) {
+    throw new Error('Missing source_video_b64 in payload');
+  }
+  const source_video_url = writeB64(sceneJson.source_video_b64, 'source.mp4');
+  console.log(`[renderer] source video ${(fs.statSync(path.join(tmpDir,'source.mp4')).size/1024/1024).toFixed(1)} MB`);
 
-  // ── Decode CTA banner ───────────────────────────────────────────────────
-  const ctaPath = path.join(tmpDir, 'cta_banner.png');
-  fs.writeFileSync(ctaPath, Buffer.from(sceneJson.cta_banner_b64, 'base64'));
+  // ── CTA banner (OPTIONAL) ────────────────────────────────
+  let cta_banner_url = null;
+  if (sceneJson.cta_banner_b64) cta_banner_url = writeB64(sceneJson.cta_banner_b64, 'cta_banner.png');
 
-  // ── Decode audio chunks and rewrite sequence ────────────────────────────
-  // Each freeze segment carries audio_b64 (a WAV file encoded as base64).
-  // We decode it to disk and replace audio_b64 with audio_url.
-  const transformedSequence = sceneJson.sequence.map(seg => {
-    if (seg.type !== 'freeze') return seg;
-
-    const audioFileName = `audio_${seg.segment_id}.wav`;
-    const audioPath     = path.join(tmpDir, audioFileName);
-    fs.writeFileSync(audioPath, Buffer.from(seg.audio_b64, 'base64'));
-
-    // Replace base64 payload with a URL Remotion can fetch
-    const { audio_b64, ...rest } = seg;
-    return {
-      ...rest,
-      audio_url: `${baseUrl}/${audioFileName}`,
-    };
-  });
-
-  // ── BGM: primary from payload, fallback to local assets/bgm/ ───────────
-  //
-  // Primary: n8n picks a track from Google Drive and passes it as
-  //   bg_music_b64. We decode it into tmpDir and serve it via Express.
-  //
-  // Fallback: if the payload has no BGM (Drive pick failed, node skipped,
-  //   or n8n connection issue), we pick a random track from the local
-  //   assets/bgm/ folder baked into the Docker image.
-  //
-  // If both fail, bg_music_url stays null and the composition renders
-  //   the video without background music — non-fatal.
+  // ── BGM: payload first, then local assets/bgm fallback ───────────────────
   let bg_music_url = null;
-
   if (sceneJson.bg_music_b64) {
-    // ── Primary: decode BGM from payload ───────────────────────────────────
     try {
-      const bgmExt      = (sceneJson.bg_music_name || 'track.mp3').split('.').pop().toLowerCase();
-      const bgmFileName = `bg_music.${bgmExt}`;
-      const bgmFilePath = path.join(tmpDir, bgmFileName);
-      fs.writeFileSync(bgmFilePath, Buffer.from(sceneJson.bg_music_b64, 'base64'));
-      bg_music_url = `${baseUrl}/${bgmFileName}`;
-      console.log(`[renderer] BGM from Drive: ${sceneJson.bg_music_name || bgmFileName}`);
-    } catch (err) {
-      console.warn(`[renderer] BGM decode failed — trying local fallback: ${err.message}`);
-    }
+      const ext = (sceneJson.bg_music_name || 'track.mp3').split('.').pop().toLowerCase();
+      bg_music_url = writeB64(sceneJson.bg_music_b64, `bg_music.${ext}`);
+      console.log(`[renderer] BGM from payload: ${sceneJson.bg_music_name || 'bg_music.'+ext}`);
+    } catch (e) { console.warn('[renderer] BGM decode failed: ' + e.message); }
   }
-
   if (!bg_music_url) {
-    // ── Fallback: pick random from local assets/bgm/ ───────────────────────
     try {
-      const bgmDir   = path.resolve(__dirname, '../assets/bgm');
-      const bgmFiles = fs.readdirSync(bgmDir).filter(f => f.endsWith('.mp3'));
-      if (bgmFiles.length > 0) {
-        const randomBgm = bgmFiles[Math.floor(Math.random() * bgmFiles.length)];
-        bg_music_url    = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(randomBgm)}`;
-        console.log(`[renderer] BGM fallback (local): ${randomBgm}`);
-      } else {
-        console.log('[renderer] No local BGM files found — rendering without background music');
+      const bgmDir = path.resolve(__dirname, '../assets/bgm');
+      const files  = fs.readdirSync(bgmDir).filter(f => f.endsWith('.mp3'));
+      if (files.length) {
+        const pick = files[Math.floor(Math.random() * files.length)];
+        bg_music_url = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(pick)}`;
+        console.log(`[renderer] BGM fallback (local): ${pick}`);
       }
-    } catch (err) {
-      console.warn(`[renderer] BGM local fallback failed (non-fatal): ${err.message}`);
-    }
+    } catch (e) { /* non-fatal */ }
   }
 
-  // ── Build transformed scene_json ────────────────────────────────────────
-  // Strip all large base64 fields — they have been written to disk.
-  // Replace with http:// URLs that Remotion's OffthreadVideo / Audio / Img
-  // components can fetch from the Express static server.
-  const { source_video_b64, cta_banner_b64, bg_music_b64, bg_music_name, ...rest } = sceneJson;
-  const transformedSceneJson = {
-    ...rest,
-    source_video_url: `${baseUrl}/source.mp4`,
-    cta_banner_url:   `${baseUrl}/cta_banner.png`,
-    bg_music_url,     // null if both primary and fallback failed — handled in composition
-    sequence:         transformedSequence,
+  // ── SFX name → served URL (only files that exist) ────────────────────────
+  let sfxHave = new Set();
+  try { sfxHave = new Set(fs.readdirSync(path.resolve(__dirname, '../assets/sfx')).filter(f => f.endsWith('.mp3'))); } catch (e) {}
+  const resolveSfx = (s) => {
+    let file = String(s.file || '');
+    if (!file.endsWith('.mp3')) file += '.mp3';
+    if (!sfxHave.has(file)) { console.warn(`[renderer] SFX skipped (missing): ${file}`); return null; }
+    return { ...s, url: `http://localhost:${PORT}/public/assets/sfx/${encodeURIComponent(file)}` };
   };
 
-  console.log(`[renderer] File setup complete. URLs rooted at: ${baseUrl}`);
+  let transformed;
 
-  return {
-    sceneJson:  transformedSceneJson,
-    cleanupDir: tmpDir,
-  };
+  // ── NEW masterclass shape: timeline[] ────────────────────────────────────
+  if (Array.isArray(sceneJson.timeline)) {
+    const timeline = sceneJson.timeline.map((seg, i) => {
+      const id  = (seg.segment_id != null) ? seg.segment_id : i;
+      const out = { ...seg };
+
+      if (seg.audio_b64) { out.audio_url = writeB64(seg.audio_b64, `audio_${id}.wav`); delete out.audio_b64; }
+
+      if (seg.chart && seg.chart.freeze_frame_b64) {
+        out.chart = { ...seg.chart, freeze_frame_url: writeB64(seg.chart.freeze_frame_b64, `freeze_${id}.png`) };
+        delete out.chart.freeze_frame_b64;
+      }
+
+      if (Array.isArray(seg.components)) {
+        out.components = seg.components.map((c, ci) => {
+          if (c && c.screenshot_ref_b64) {
+            const url = writeB64(c.screenshot_ref_b64, `shot_${id}_${ci}.png`);
+            const { screenshot_ref_b64, ...rest } = c;
+            return { ...rest, screenshot_ref_url: url };
+          }
+          return c;
+        });
+      }
+
+      if (Array.isArray(seg.sfx)) out.sfx = seg.sfx.map(resolveSfx).filter(Boolean);
+
+      return out;
+    });
+
+    const { source_video_b64, cta_banner_b64, bg_music_b64, bg_music_name, ...rest } = sceneJson;
+    transformed = { ...rest, source_video_url, cta_banner_url, bg_music_url, timeline };
+  }
+  // ── OLD shape: sequence[] (REPURPOSE_SCENE) — unchanged behaviour ─────────
+  else {
+    const sequence = (sceneJson.sequence || []).map(seg => {
+      if (seg.type !== 'freeze') return seg;
+      const audio_url = writeB64(seg.audio_b64, `audio_${seg.segment_id}.wav`);
+      const { audio_b64, ...rest } = seg;
+      return { ...rest, audio_url };
+    });
+    const { source_video_b64, cta_banner_b64, bg_music_b64, bg_music_name, ...rest } = sceneJson;
+    transformed = { ...rest, source_video_url, cta_banner_url, bg_music_url, sequence };
+  }
+
+  console.log(`[renderer] file setup complete → ${baseUrl}`);
+  return { sceneJson: transformed, cleanupDir: tmpDir };
 }
 
 // ── Narrator audio normalization (SFX 404-proofing) ────────────────────────
