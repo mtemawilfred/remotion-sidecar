@@ -11,14 +11,16 @@
 //   • Captions = word-synced (copper highlight, Poppins).
 //
 // MEMORY / OOM — the important part (why the old one crashed on tiny videos):
-//   • OLD: every freeze segment mounted a full <OffthreadVideo> wrapped in
-//     <Freeze>. Many full-video decoders alive at once → OOM regardless of
-//     output size.
+//   • OLD: every freeze segment mounted a full video wrapped in <Freeze>.
+//     Many full-video decoders alive at once → OOM regardless of output size.
 //   • NEW: freezes render as a still <Img> (seg.chart.freeze_frame_url) — near
-//     zero memory. Only LIVE segments mount a video, and via @remotion/media
-//     <Video> (memory-efficient) trimmed to just the played range.
-//   • Pair this with renderer.js settings: low concurrency +
-//     offthreadVideoCacheSizeInBytes (see INTEGRATION.md).
+//     zero memory. Only LIVE segments mount a video, via @remotion/media <Video>
+//     trimmed to just the played range.
+//
+// @remotion/media NOTE: <Video> takes `objectFit` as a PROP, not in `style`
+// (putting it in style is ignored and logs a warning). So Video uses `fillVid`
+// (no objectFit) + objectFit="contain"; <Img> keeps `fill` (objectFit in style
+// is fine for Img).
 //
 // FALLBACKS: if a freeze has no freeze_frame_url we <Freeze> a <Video> (works,
 // but heavier — the workflow should always send freeze_frame_url).
@@ -66,7 +68,8 @@ const brandOf = (b = {}) => ({
   fontMono:     b.font_mono    || MONO,
 });
 
-const fill = { width: '100%', height: '100%', objectFit: 'contain' };
+const fill    = { width: '100%', height: '100%', objectFit: 'contain' }; // <Img>
+const fillVid = { width: '100%', height: '100%' };                        // <Video> (objectFit via prop)
 
 // Resolve an inset anchor (or free {x,y}) to a centre point in px.
 function resolveCentre(state, scale) {
@@ -250,7 +253,8 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
             trimBefore={ms2f((chart.play_from || 0) * 1000, fps)}
             trimAfter={ms2f((chart.play_to || 0) * 1000, fps)}
             muted
-            style={fill}
+            objectFit="contain"
+            style={fillVid}
           />
         ) : chart.freeze_frame_url ? (
           // PREFERRED: still image = near-zero memory
@@ -258,7 +262,7 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
         ) : (
           // FALLBACK: freeze a video frame (heavier — avoid in production)
           <Freeze frame={ms2f((chart.freeze_at || 0) * 1000, fps)}>
-            <Video src={srcUrl} muted style={fill} />
+            <Video src={srcUrl} muted objectFit="contain" style={fillVid} />
           </Freeze>
         )}
       </AbsoluteFill>
@@ -553,7 +557,7 @@ function LegacySegment({ seg, srcUrl, fps, brand }) {
   if (seg.type === 'live') {
     return (
       <AbsoluteFill>
-        <Video src={srcUrl} trimBefore={Math.round(seg.start_time * fps)} trimAfter={Math.round(seg.end_time * fps)} muted style={fill} />
+        <Video src={srcUrl} trimBefore={Math.round(seg.start_time * fps)} trimAfter={Math.round(seg.end_time * fps)} muted objectFit="contain" style={fillVid} />
       </AbsoluteFill>
     );
   }
@@ -563,7 +567,7 @@ function LegacySegment({ seg, srcUrl, fps, brand }) {
         <Img src={seg.freeze_frame_url} style={fill} />
       ) : (
         <Freeze frame={Math.round(seg.timestamp * fps)}>
-          <Video src={srcUrl} muted style={fill} />
+          <Video src={srcUrl} muted objectFit="contain" style={fillVid} />
         </Freeze>
       )}
       {seg.audio_url && <Audio src={seg.audio_url} />}
