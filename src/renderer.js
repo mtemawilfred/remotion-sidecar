@@ -113,24 +113,7 @@ function getCompositionSpec(sceneJson) {
   };
 }
 
-// ── REPURPOSE file setup ──────────────────────────────────────────────────
-// Called for both REPURPOSE_SCENE and REPURPOSE_LONG_FORM.
-//
-// WHY THIS IS NEEDED:
-//   n8n and this sidecar are separate Railway services — no shared /tmp.
-//   The payload carries source_video_b64, cta_banner_b64, audio_b64 per
-//   freeze segment, and optionally bg_music_b64. We decode all of those
-//   into a temp dir, serve them via the Express static route
-//   /public/tmp_renders (configured in server.js), and rewrite the
-//   scene_json with http://localhost:PORT/... URLs for Remotion.
-//
-// CLEANUP:
-//   The temp dir is returned as cleanupDir and deleted in renderScene()
-//   immediately after the MP4 buffer is read.
-//
-// Returns:
-//   { sceneJson: transformedSceneJson, cleanupDir: '/app/tmp_renders/...' }
-// ── renderer.js → REPLACE the existing setupRepurposeFiles() with this ──────
+// Existing setupRepurposeFiles()──
 // Handles BOTH payload shapes:
 //   • NEW masterclass: sceneJson.timeline[]  (REPURPOSE_LONG_FORM)
 //   • OLD freeze/live: sceneJson.sequence[]   (REPURPOSE_SCENE — unchanged)
@@ -154,14 +137,51 @@ async function setupRepurposeFiles(sceneJson) {
     return `${baseUrl}/${name}`;
   };
 
-  // ── Source video (required) ──────────────────────────────────────────────
-  if (!sceneJson.source_video_b64) {
-    throw new Error('Missing source_video_b64 in payload');
-  }
-  const source_video_url = writeB64(sceneJson.source_video_b64, 'source.mp4');
-  console.log(`[renderer] source video ${(fs.statSync(path.join(tmpDir,'source.mp4')).size/1024/1024).toFixed(1)} MB`);
+  // ── Source video — URL (preferred, scalable) or base64 (fallback) ─────────
+  // NEW: the big source video is fetched from GCS by URL instead of arriving as
+  // ~500MB of base64 in the JSON. The sidecar authenticates to GCS with its OWN
+  // service account (GOOGLE_SERVICE_ACCOUNT_JSON — same one driveFetch uses), so
+  // n8n doesn't have to pass any token. axios + google-auth-library are already
+  // dependencies in the sidecar.
+  const axios = require('axios');
+  const { GoogleAuth } = require('google-auth-library');
 
-  // ── CTA banner (OPTIONAL) ────────────────────────────────
+  async function gcsAccessToken() {
+    const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    const auth = new GoogleAuth({
+      credentials: raw ? JSON.parse(raw) : undefined,           // ADC fallback if env absent
+      scopes: ['https://www.googleapis.com/auth/devstorage.read_only'],
+    });
+    const client = await auth.getClient();
+    const t = await client.getAccessToken();
+    return (t && (t.token || t)) || null;
+  }
+  async function fetchUrl(u, token) {
+    const headers = token ? { Authorization: 'Bearer ' + token } : {};
+    const resp = await axios.get(u, {
+      responseType: 'arraybuffer', headers,
+      maxContentLength: Infinity, maxBodyLength: Infinity,
+    });
+    return Buffer.from(resp.data);
+  }
+
+  let source_video_url;
+  if (sceneJson.source_video_url) {
+    // payload token wins (if n8n ever sends one); otherwise mint from the
+    // sidecar's own service account.
+    const token = sceneJson.gcs_token || await gcsAccessToken();
+    const buf = await fetchUrl(sceneJson.source_video_url, token);
+    fs.writeFileSync(path.join(tmpDir, 'source.mp4'), buf);
+    source_video_url = `${baseUrl}/source.mp4`;
+    console.log(`[renderer] source video fetched from URL ${(buf.length/1024/1024).toFixed(1)} MB`);
+  } else if (sceneJson.source_video_b64) {
+    source_video_url = writeB64(sceneJson.source_video_b64, 'source.mp4');
+    console.log(`[renderer] source video from base64 ${(fs.statSync(path.join(tmpDir,'source.mp4')).size/1024/1024).toFixed(1)} MB`);
+  } else {
+    throw new Error('No source video (need source_video_url or source_video_b64)');
+  }
+
+  // ── CTA banner (OPTIONAL — was the crash) ────────────────────────────────
   let cta_banner_url = null;
   if (sceneJson.cta_banner_b64) cta_banner_url = writeB64(sceneJson.cta_banner_b64, 'cta_banner.png');
 
