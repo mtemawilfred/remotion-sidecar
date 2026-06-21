@@ -337,33 +337,31 @@ async function renderScene(sceneJson) {
     inputProps: { sceneJson: activeSceneJson },
   });
 
-  await renderMedia({
-    // Override durationInFrames on the composition object.
-    // Remotion reads duration from here during rendering.
-    composition: {
-      ...composition,
-      durationInFrames,
-    },
-    serveUrl:        bp,
-    codec:           'h264',
-    outputLocation:  outPath,
-    inputProps:      { sceneJson: activeSceneJson },
-    // Also pass as top-level param — both are required.
-    durationInFrames,
-    chromiumOptions: {
-      executablePath:     process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
-      disableWebSecurity: true,
-    },
-    fps:    spec.fps,
-    width:  spec.width,
-    height: spec.height,
-    onProgress: ({ progress }) => {
-      const pct = Math.round(progress * 100);
-      if (pct % 25 === 0) {
-        console.log(`[renderer] Scene ${activeSceneJson.scene_id} (${spec.id}): ${pct}%`);
-      }
-    },
-  });
+await renderMedia({
+  composition: { ...composition, durationInFrames },
+  serveUrl:        bp,
+  codec:           'h264',
+  outputLocation:  outPath,
+  inputProps:      { sceneJson: activeSceneJson },   // ← sceneJson, not payload
+  durationInFrames,
+  fps:    spec.fps,
+  width:  spec.width,
+  height: spec.height,
+
+  // ── MEMORY LEVERS ──────────────────────────────
+  concurrency: Number(process.env.REMOTION_CONCURRENCY) || 2,
+  offthreadVideoCacheSizeInBytes: 256 * 1024 * 1024,
+
+  chromiumOptions: {
+    executablePath:     process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium',
+    disableWebSecurity: true,
+    // gl: 'swiftshader',  // only if you hit GPU/EGL errors on Railway
+  },
+  onProgress: ({ progress }) => {
+    const pct = Math.round(progress * 100);
+    if (pct % 25 === 0) console.log(`[renderer] Scene ${activeSceneJson.scene_id} (${spec.id}): ${pct}%`);
+  },
+});
 
   const buffer = fs.readFileSync(outPath);
   fs.unlinkSync(outPath);
@@ -509,7 +507,10 @@ async function renderVideo(payload) {
 
   await renderMedia({
     composition: { ...composition, durationInFrames },
-    serveUrl: bp, codec: 'h264', outputLocation: outPath, inputProps: { payload: active },
+    serveUrl: bp, 
+    codec: 'h264', 
+    outputLocation: outPath, 
+    inputProps: { payload: active },
     durationInFrames, fps, width, height,
     chromiumOptions: { executablePath: process.env.REMOTION_CHROMIUM_PATH || '/usr/bin/chromium', disableWebSecurity: true },
     onProgress: ({ progress }) => { const p = Math.round(progress * 100); if (p % 25 === 0) console.log(`[render-video] ${active.video_id}: ${p}%`); },
