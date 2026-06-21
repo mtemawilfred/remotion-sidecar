@@ -113,16 +113,15 @@ function getCompositionSpec(sceneJson) {
   };
 }
 
-// Existing setupRepurposeFiles()──
-// Handles BOTH payload shapes:
-//   • NEW masterclass: sceneJson.timeline[]  (REPURPOSE_LONG_FORM)
-//   • OLD freeze/live: sceneJson.sequence[]   (REPURPOSE_SCENE — unchanged)
-// CTA banner + BGM are OPTIONAL (the old version crashed when cta_banner_b64
-// was absent — that was the "Buffer.from(undefined)" 500).
-//
-// Produces the URLs the composition reads: source_video_url, per-segment
-// audio_url, chart.freeze_frame_url, component screenshot_ref_url, sfx[].url,
-// bg_music_url. Everything decoded into a temp dir served by express.
+// ── existing setupRepurposeFiles() is this ──────
+// Final state: source video arrives as base64 in the payload (original mechanism);
+// the rendered MP4 is returned to n8n as a binary file (no GCS, no service account
+// in this path). Handles BOTH payload shapes:
+//   • NEW masterclass: sceneJson.timeline[]   (REPURPOSE_LONG_FORM)
+//   • OLD freeze/live:  sceneJson.sequence[]   (REPURPOSE_SCENE — unchanged)
+// CTA banner + BGM are OPTIONAL (the old code crashed when cta_banner_b64 was
+// absent — "Buffer.from(undefined)"). Per-segment audio + freeze PNGs are decoded
+// to disk and served; SFX names map to the baked assets.
 // ─────────────────────────────────────────────────────────────────────────────
 async function setupRepurposeFiles(sceneJson) {
   const PORT    = process.env.PORT || 3000;
@@ -137,51 +136,14 @@ async function setupRepurposeFiles(sceneJson) {
     return `${baseUrl}/${name}`;
   };
 
-  // ── Source video — URL (preferred, scalable) or base64 (fallback) ─────────
-  // NEW: the big source video is fetched from GCS by URL instead of arriving as
-  // ~500MB of base64 in the JSON. The sidecar authenticates to GCS with its OWN
-  // service account (GOOGLE_SERVICE_ACCOUNT_JSON — same one driveFetch uses), so
-  // n8n doesn't have to pass any token. axios + google-auth-library are already
-  // dependencies in the sidecar.
-  const axios = require('axios');
-  const { GoogleAuth } = require('google-auth-library');
-
-  async function gcsAccessToken() {
-    const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-    const auth = new GoogleAuth({
-      credentials: raw ? JSON.parse(raw) : undefined,           // ADC fallback if env absent
-      scopes: ['https://www.googleapis.com/auth/devstorage.read_only'],
-    });
-    const client = await auth.getClient();
-    const t = await client.getAccessToken();
-    return (t && (t.token || t)) || null;
+  // ── Source video (base64, required) ──────────────────────────────────────
+  if (!sceneJson.source_video_b64) {
+    throw new Error('Missing source_video_b64 in payload');
   }
-  async function fetchUrl(u, token) {
-    const headers = token ? { Authorization: 'Bearer ' + token } : {};
-    const resp = await axios.get(u, {
-      responseType: 'arraybuffer', headers,
-      maxContentLength: Infinity, maxBodyLength: Infinity,
-    });
-    return Buffer.from(resp.data);
-  }
+  const source_video_url = writeB64(sceneJson.source_video_b64, 'source.mp4');
+  console.log(`[renderer] source video ${(fs.statSync(path.join(tmpDir,'source.mp4')).size/1024/1024).toFixed(1)} MB`);
 
-  let source_video_url;
-  if (sceneJson.source_video_url) {
-    // payload token wins (if n8n ever sends one); otherwise mint from the
-    // sidecar's own service account.
-    const token = sceneJson.gcs_token || await gcsAccessToken();
-    const buf = await fetchUrl(sceneJson.source_video_url, token);
-    fs.writeFileSync(path.join(tmpDir, 'source.mp4'), buf);
-    source_video_url = `${baseUrl}/source.mp4`;
-    console.log(`[renderer] source video fetched from URL ${(buf.length/1024/1024).toFixed(1)} MB`);
-  } else if (sceneJson.source_video_b64) {
-    source_video_url = writeB64(sceneJson.source_video_b64, 'source.mp4');
-    console.log(`[renderer] source video from base64 ${(fs.statSync(path.join(tmpDir,'source.mp4')).size/1024/1024).toFixed(1)} MB`);
-  } else {
-    throw new Error('No source video (need source_video_url or source_video_b64)');
-  }
-
-  // ── CTA banner (OPTIONAL — was the crash) ────────────────────────────────
+  // ── CTA banner (OPTIONAL) ────────────────────────────────────────────────
   let cta_banner_url = null;
   if (sceneJson.cta_banner_b64) cta_banner_url = writeB64(sceneJson.cta_banner_b64, 'cta_banner.png');
 
@@ -191,7 +153,6 @@ async function setupRepurposeFiles(sceneJson) {
     try {
       const ext = (sceneJson.bg_music_name || 'track.mp3').split('.').pop().toLowerCase();
       bg_music_url = writeB64(sceneJson.bg_music_b64, `bg_music.${ext}`);
-      console.log(`[renderer] BGM from payload: ${sceneJson.bg_music_name || 'bg_music.'+ext}`);
     } catch (e) { console.warn('[renderer] BGM decode failed: ' + e.message); }
   }
   if (!bg_music_url) {
@@ -203,7 +164,7 @@ async function setupRepurposeFiles(sceneJson) {
         bg_music_url = `http://localhost:${PORT}/public/assets/bgm/${encodeURIComponent(pick)}`;
         console.log(`[renderer] BGM fallback (local): ${pick}`);
       }
-    } catch (e) { /* non-fatal */ }
+    } catch (e) {}
   }
 
   // ── SFX name → served URL (only files that exist) ────────────────────────
