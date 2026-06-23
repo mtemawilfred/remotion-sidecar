@@ -21,9 +21,13 @@ import { AbsoluteFill, Freeze, Img, Sequence, interpolate, Easing, useCurrentFra
 import { Video, Audio } from '@remotion/media';
 import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
 import { loadFont as loadJetBrainsMono } from '@remotion/google-fonts/JetBrainsMono';
+import { fitText } from '@remotion/layout-utils';
 
-const { fontFamily: POPPINS } = loadPoppins();
-const { fontFamily: MONO }    = loadJetBrainsMono();
+// Load ONLY the weights/subset we actually use. Default loadFont() pulls every
+// weight + italic (~96 network requests per render tab) which slows startup badly
+// across the parallel tabs. Restricting cuts it to a handful of requests per tab.
+const { fontFamily: POPPINS } = loadPoppins('normal', { weights: ['400', '500', '600', '700', '800', '900'], subsets: ['latin'] });
+const { fontFamily: MONO }    = loadJetBrainsMono('normal', { weights: ['400', '600', '700'], subsets: ['latin'] });
 const SANS  = `${POPPINS}, 'Noto Color Emoji', sans-serif`;
 const MONOS = `${MONO}, 'Noto Color Emoji', monospace`;
 
@@ -32,6 +36,18 @@ const MARGIN = 110, TOP = 130, BOTTOM = 905;
 const BGM_VOLUME = 0.1, INSET_MARGIN = 0.05, INSET_SCALE_DEFAULT = 0.42;
 
 const ms2f = (ms, fps) => Math.round(((ms || 0) / 1000) * fps);
+
+// Best-practice text fitting (@remotion/layout-utils): size text to the available
+// width instead of guessing. Defensive — falls back to `base` if measurement fails
+// (e.g. fonts not yet loaded), so a render can never break on it.
+function fitSize(text, withinWidth, fontWeight, base, max) {
+  try {
+    const { fontSize } = fitText({ text: String(text || ''), withinWidth, fontFamily: POPPINS, fontWeight, textTransform: 'none' });
+    return Math.max(Math.round(base * 0.7), Math.min(max, Math.floor(fontSize)));
+  } catch (e) {
+    return base;
+  }
+}
 
 const brandOf = (b = {}) => ({
   background: b.background || '#FFFFFF', ink: b.ink || '#1B2330', primary: b.primary || '#14315F',
@@ -48,7 +64,7 @@ const fillVid = { width: '100%', height: '100%' };
 const ENTRANCES = ['rise', 'slideL', 'pop', 'slideR', 'blur', 'spread'];
 function entrance(kind, frame, settleF, fps, durMs = 420) {
   const start = Math.max(0, settleF - ms2f(durMs, fps));
-  const ease = kind === 'pop' ? Easing.out(Easing.back(1.6)) : Easing.out(Easing.cubic);
+  const ease = kind === 'pop' ? Easing.bezier(0.34, 1.56, 0.64, 1) : Easing.bezier(0.16, 1, 0.3, 1);
   const t = interpolate(frame, [start, settleF], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: ease });
   if (kind === 'blur')   return { opacity: t, filter: `blur(${(1 - t) * 10}px)` };
   if (kind === 'spread') return { opacity: t, letterSpacing: `${(1 - t) * 0.12}em` };
@@ -187,12 +203,18 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   const outro = comps.find(c => c.type === 'outro_cta');
   if (outro) return <OutroCTA c={outro} seg={seg} fps={fps} brand={brand} />;
 
-  const annos = comps.filter(c => c.type === 'annotation');
+  // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
   let flow = comps.filter(c => !['outro_cta', 'annotation', 'brand_bug'].includes(c.type));
-  // HOOK never renders near-blank: if the writer/animator gave only text, inject a
-  // default animated graphic so the busiest scene actually looks busy.
+  // HOOK never renders near-blank: if only text was given, inject one animated graphic.
   if (seg.phase === 'hook' && mode === 'graphics' && !flow.some(c => GRAPHIC_TYPES.includes(c.type))) {
     flow = [...flow, { type: 'candle_cluster', bias: seg.chart_bias || 'Bearish', _auto: true, enter_at_ms: 200 }];
+  }
+  // C4: one focal point — keep at most 3 elements, highest importance first (stable order).
+  if (flow.length > 3) {
+    const keep = flow.map((c, i) => i)
+      .sort((a, b) => (IMPORTANCE_RANK[flow[a].importance] ?? 1) - (IMPORTANCE_RANK[flow[b].importance] ?? 1) || a - b)
+      .slice(0, 3).sort((a, b) => a - b);
+    flow = keep.map(i => flow[i]);
   }
   const chartBox = chartFinalBox(seg, cam, mode);
   const chartAnchor = (seg.chart && seg.chart.anchor) || (cam && cam.to && cam.to.anchor) || 'center_right';
@@ -207,7 +229,6 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
       {mode === 'graphics' && <BackgroundTreatment flow={flow} seg={seg} fps={fps} brand={brand} />}
       {showChart && <ChartLayer seg={seg} srcUrl={srcUrl} fps={fps} cam={cam} mode={mode} />}
       {gZone && flow.length > 0 && <GraphicsStack flow={flow} seg={seg} fps={fps} brand={brand} zone={gZone} settleF={settleF} />}
-      {annos.map((a, i) => <Annotation key={i} c={a} seg={seg} fps={fps} brand={brand} mode={mode} chartAnchor={chartAnchor} chartBox={chartBox} />)}
       <BrandBug brand={brand} />
       {seg.captions && seg.captions.length > 0 && <Captions captions={seg.captions} fps={fps} brand={brand} />}
       {seg.audio_url && <Audio src={seg.audio_url} />}
@@ -311,12 +332,13 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
   }
 }
 
-function HookText({ c, fps, brand }) {
+function HookText({ c, fps, brand, zoneW }) {
   const base = c.enter_at_ms || 60;
+  const fs = fitSize(c.primary, (zoneW || 1500) * 0.96, 900, 104, 140);
   return (
-    <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 84, lineHeight: 1.05, letterSpacing: '-0.03em' }}>
+    <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: fs, lineHeight: 1.06, letterSpacing: '-0.03em' }}>
       <div style={{ color: brand.primary }}><KineticText text={c.primary} settleMs={base} fps={fps} kind="rise" perWordMs={85} durMs={460} /></div>
-      {c.secondary && <div style={{ color: brand.accent }}><KineticText text={c.secondary} settleMs={base + 360} fps={fps} kind="rise" perWordMs={70} durMs={420} /></div>}
+      {c.secondary && <div style={{ color: brand.accent, fontSize: Math.round(fs * 0.62) }}><KineticText text={c.secondary} settleMs={base + 360} fps={fps} kind="rise" perWordMs={70} durMs={420} /></div>}
     </div>
   );
 }
@@ -326,10 +348,10 @@ function ConceptCard({ c, fps, brand, kind, durMs }) {
   const card = entrance(kind, frame, ms2f(120, fps), fps, durMs);
   const body = entrance('rise', frame, ms2f(c.enter_at_ms || 500, fps), fps, 360);
   return (
-    <div style={{ ...card, background: '#FFFFFF', border: `1px solid ${brand.border}`, borderRadius: 20, padding: '34px 38px', boxShadow: '0 14px 40px rgba(11,30,64,0.07)' }}>
-      {c.title && <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 38, color: brand.primary, marginBottom: 14 }}>{c.title}</div>}
+    <div style={{ ...card, background: '#FFFFFF', border: `1px solid ${brand.border}`, borderRadius: 24, padding: '42px 50px', boxShadow: '0 14px 40px rgba(11,30,64,0.07)' }}>
+      {c.title && <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 56, color: brand.primary, marginBottom: 18 }}>{c.title}</div>}
       {c.screenshot_ref_url && <Img src={c.screenshot_ref_url} style={{ width: '100%', borderRadius: 10, border: '1px solid #CDD4DF', marginBottom: 16 }} />}
-      {c.body && <div style={{ ...body, fontFamily: SANS, fontWeight: 400, fontSize: 27, lineHeight: 1.45, color: brand.ink }}>{c.body}</div>}
+      {c.body && <div style={{ ...body, fontFamily: SANS, fontWeight: 400, fontSize: 40, lineHeight: 1.4, color: brand.ink }}>{c.body}</div>}
     </div>
   );
 }
@@ -340,10 +362,10 @@ function CallbackCard({ c, fps, brand, kind, durMs }) {
   const card = entrance(kind, frame, ms2f(120, fps), fps, durMs);
   const body = entrance('rise', frame, ms2f(c.enter_at_ms || 500, fps), fps, 360);
   return (
-    <div style={{ ...card, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 16, padding: '28px 32px' }}>
-      <div style={{ display: 'inline-block', background: brand.accent, color: '#fff', fontFamily: MONOS, fontSize: 18, fontWeight: 600, padding: '4px 12px', borderRadius: 8, marginBottom: 14 }}>{c.tag || 'RECALL'}</div>
-      <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 34, color: brand.primary }}>{c.title}</div>
-      {c.body && <div style={{ ...body, fontFamily: SANS, fontSize: 25, color: brand.ink, marginTop: 10, lineHeight: 1.4 }}>{c.body}</div>}
+    <div style={{ ...card, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 20, padding: '34px 40px' }}>
+      <div style={{ display: 'inline-block', background: brand.accent, color: '#fff', fontFamily: MONOS, fontSize: 26, fontWeight: 600, padding: '6px 16px', borderRadius: 8, marginBottom: 18 }}>{c.tag || 'RECALL'}</div>
+      <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 50, color: brand.primary }}>{c.title}</div>
+      {c.body && <div style={{ ...body, fontFamily: SANS, fontSize: 38, color: brand.ink, marginTop: 14, lineHeight: 1.38 }}>{c.body}</div>}
     </div>
   );
 }
@@ -354,20 +376,20 @@ function Roadmap({ c, seg, fps, brand }) {
   const frame = useCurrentFrame();
   const rows = (c.items || c.rows || []).slice(0, 6).map(r => typeof r === 'string' ? { label: r } : r);
   const times = itemFrames(rows.length, seg.frameCount, fps, rows.map(r => r.enter_at_ms));
-  const fs = rows.length >= 6 ? 24 : rows.length >= 5 ? 27 : 30;
+  const fs = rows.length >= 6 ? 40 : rows.length >= 5 ? 46 : 52;
   const fallbackIcons = ['choch', 'order_block', 'liquidity', 'sweep', 'entry', 'check'];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: rows.length >= 5 ? 14 : 18 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: rows.length >= 5 ? 22 : 28 }}>
       {rows.map((r, i) => {
         const e = entrance('slideL', frame, times[i], fps, 360);
         const label = stripEmoji(r.label || r.title);
         return (
-          <div key={i} style={{ ...e, display: 'flex', alignItems: 'center', gap: 18 }}>
-            <div style={{ flex: 'none', width: 46, height: 46, borderRadius: 12, background: brand.panel, border: `1px solid ${brand.border}`,
+          <div key={i} style={{ ...e, display: 'flex', alignItems: 'center', gap: 26 }}>
+            <div style={{ flex: 'none', width: 72, height: 72, borderRadius: 16, background: brand.panel, border: `1px solid ${brand.border}`,
               display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-              <Icon name={r.icon || fallbackIcons[i % fallbackIcons.length]} color={brand.accent} size={26} />
-              <div style={{ position: 'absolute', top: -8, left: -8, width: 22, height: 22, borderRadius: '50%', background: brand.primary, color: '#fff',
-                fontFamily: SANS, fontWeight: 800, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
+              <Icon name={r.icon || fallbackIcons[i % fallbackIcons.length]} color={brand.accent} size={40} />
+              <div style={{ position: 'absolute', top: -10, left: -10, width: 30, height: 30, borderRadius: '50%', background: brand.primary, color: '#fff',
+                fontFamily: SANS, fontWeight: 800, fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
             </div>
             <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: fs, color: brand.primary, lineHeight: 1.22 }}>{label}</div>
           </div>
@@ -388,7 +410,7 @@ function TableC({ c, seg, fps, brand }) {
         return (
           <div key={i} style={{ ...e, display: 'flex', background: head ? brand.primary : (i % 2 ? '#FFFFFF' : brand.panel) }}>
             {(Array.isArray(row) ? row : [row]).map((cell, j) => (
-              <div key={j} style={{ flex: 1, padding: '15px 20px', fontFamily: SANS, fontSize: head ? 24 : 23, fontWeight: head ? 600 : 400, color: head ? '#fff' : brand.ink, fontVariantNumeric: 'tabular-nums', borderLeft: j ? `1px solid ${head ? 'rgba(255,255,255,.15)' : brand.border}` : 'none' }}>{cell}</div>
+              <div key={j} style={{ flex: 1, padding: '22px 30px', fontFamily: SANS, fontSize: head ? 38 : 34, fontWeight: head ? 600 : 400, color: head ? '#fff' : brand.ink, fontVariantNumeric: 'tabular-nums', borderLeft: j ? `1px solid ${head ? 'rgba(255,255,255,.15)' : brand.border}` : 'none' }}>{cell}</div>
             ))}
           </div>
         );
@@ -405,11 +427,11 @@ function StatCallout({ c, fps, brand, kind, durMs }) {
   const barW = interpolate(frame, [settle, settle + ms2f(500, fps)], [0, 100], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
   return (
     <div style={{ ...e }}>
-      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 116, color: brand.accent, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>{c.value}</div>
-      <div style={{ height: 10, borderRadius: 6, background: brand.border, marginTop: 14, overflow: 'hidden' }}>
+      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 168, color: brand.accent, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>{c.value}</div>
+      <div style={{ height: 16, borderRadius: 8, background: brand.border, marginTop: 18, overflow: 'hidden' }}>
         <div style={{ width: `${barW}%`, height: '100%', background: brand.accent }} />
       </div>
-      {c.label && <div style={{ fontFamily: SANS, fontSize: 28, color: brand.slate, marginTop: 12 }}>{c.label}</div>}
+      {c.label && <div style={{ fontFamily: SANS, fontSize: 44, color: brand.slate, marginTop: 16 }}>{c.label}</div>}
     </div>
   );
 }
@@ -418,9 +440,9 @@ function Diagram({ c, fps, brand, kind, durMs }) {
   const frame = useCurrentFrame();
   const e = entrance(kind, frame, ms2f(120, fps), fps, durMs);
   return (
-    <div style={{ ...e, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 16, padding: '26px 30px', display: 'flex', alignItems: 'center', gap: 16 }}>
-      <div style={{ width: 40, height: 40, borderRadius: 10, background: brand.periwinkle, flex: 'none' }} />
-      <div style={{ fontFamily: SANS, fontSize: 26, color: brand.primary, fontWeight: 500, lineHeight: 1.35 }}>{c.label || c.shape || ''}</div>
+    <div style={{ ...e, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 20, padding: '32px 40px', display: 'flex', alignItems: 'center', gap: 24 }}>
+      <div style={{ width: 56, height: 56, borderRadius: 14, background: brand.periwinkle, flex: 'none' }} />
+      <div style={{ fontFamily: SANS, fontSize: 42, color: brand.primary, fontWeight: 500, lineHeight: 1.3 }}>{c.label || c.shape || ''}</div>
     </div>
   );
 }
@@ -428,19 +450,20 @@ function Diagram({ c, fps, brand, kind, durMs }) {
 function GenericCard({ c, fps, brand, kind, durMs }) {
   const frame = useCurrentFrame();
   const e = entrance(kind, frame, ms2f(c.enter_at_ms || 120, fps), fps, durMs);
-  return <div style={{ ...e, fontFamily: SANS, fontSize: 28, color: brand.ink, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 14, padding: 28 }}>{c.title || c.text || ''}</div>;
+  return <div style={{ ...e, fontFamily: SANS, fontSize: 42, color: brand.ink, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 18, padding: 38 }}>{c.title || c.text || ''}</div>;
 }
 
-// compact section heading (kept small so it never dominates / clips) — words animate in
-function Heading({ c, fps, brand }) {
+// section heading — sized to fill the width (fitText), words animate in
+function Heading({ c, fps, brand, zoneW }) {
   const base = c.enter_at_ms || 120;
+  const fs = fitSize(c.title || c.primary, (zoneW || 1500) * 0.96, 900, 96, 128);
   return (
     <div>
-      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 54, lineHeight: 1.1, letterSpacing: '-0.02em', color: brand.primary }}>
+      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: fs, lineHeight: 1.08, letterSpacing: '-0.02em', color: brand.primary }}>
         <KineticText text={c.title || c.primary} settleMs={base} fps={fps} kind="rise" perWordMs={60} durMs={360} />
       </div>
       {(c.subtitle || c.secondary) && (
-        <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 30, color: brand.accent, marginTop: 10, lineHeight: 1.22 }}>
+        <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: Math.round(fs * 0.5), color: brand.accent, marginTop: 16, lineHeight: 1.24 }}>
           <KineticText text={c.subtitle || c.secondary} settleMs={base + 240} fps={fps} kind="slideR" perWordMs={45} durMs={320} />
         </div>
       )}
@@ -505,8 +528,8 @@ function CandleCluster({ c, seg, fps, brand, durMs }) {
   const base = ms2f(c.enter_at_ms || 150, fps);
   const label = c.label || c.title;
   return (
-    <div style={{ width: '100%', maxWidth: 720, alignSelf: 'center' }}>
-      {label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 22, letterSpacing: '0.08em', textTransform: 'uppercase', color: brand.slate, marginBottom: 10 }}>{label}</div>}
+    <div style={{ width: '100%', maxWidth: 1280, alignSelf: 'center' }}>
+      {label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 34, letterSpacing: '0.08em', textTransform: 'uppercase', color: brand.slate, marginBottom: 10 }}>{label}</div>}
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         {candles.map((cd, i) => {
           const settle = base + ms2f(i * 70, fps);
@@ -536,7 +559,7 @@ function ZoneBox({ c, fps, brand, durMs }) {
   const glow = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin((frame / fps) / 1.2 * Math.PI * 2));
   const W = 600, H = 280;
   return (
-    <div style={{ width: '100%', maxWidth: 680, alignSelf: 'center', opacity: t }}>
+    <div style={{ width: '100%', maxWidth: 1200, alignSelf: 'center', opacity: t }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         {/* faint candles behind for context */}
         <path d="M40 150 L120 120 L200 170 L280 130" fill="none" stroke={brand.border} strokeWidth="3" strokeLinecap="round" />
@@ -562,7 +585,7 @@ function LiquidityRun({ c, fps, brand, durMs }) {
   const W = 600, H = 280, levelY = 120, stabX = 360;
   const stabTop = levelY - 70 * sw;
   return (
-    <div style={{ width: '100%', maxWidth: 680, alignSelf: 'center' }}>
+    <div style={{ width: '100%', maxWidth: 1200, alignSelf: 'center' }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         <line x1={40} y1={levelY} x2={40 + (W - 80) * draw} y2={levelY} stroke={brand.periwinkle} strokeWidth="3" strokeDasharray="8 7" />
         <g opacity={draw}>
@@ -594,15 +617,15 @@ function FlowSteps({ c, fps, brand, durMs, zoneW }) {
           const settle = base + ms2f(220 + i * 220, fps);
           const e = entrance('pop', frame, settle, fps, 420);
           return (
-            <div key={i} style={{ ...e, position: 'relative', flex: 1, background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 18,
-              boxShadow: '0 12px 30px rgba(11,30,64,0.08)', padding: '22px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 12 }}>
-              <div style={{ position: 'absolute', top: -16, left: -12, width: 34, height: 34, borderRadius: '50%', background: brand.accent, color: '#fff',
-                fontFamily: SANS, fontWeight: 800, fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
-              <div style={{ width: 64, height: 64, borderRadius: 14, background: brand.panel, border: `1px solid ${brand.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Icon name={s.icon || ['choch', 'order_block', 'liquidity', 'sweep'][i]} color={brand.primary} size={34} />
+            <div key={i} style={{ ...e, position: 'relative', flex: 1, background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 22,
+              boxShadow: '0 14px 36px rgba(11,30,64,0.08)', padding: '32px 22px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 16 }}>
+              <div style={{ position: 'absolute', top: -20, left: -16, width: 48, height: 48, borderRadius: '50%', background: brand.accent, color: '#fff',
+                fontFamily: SANS, fontWeight: 800, fontSize: 23, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
+              <div style={{ width: 88, height: 88, borderRadius: 18, background: brand.panel, border: `1px solid ${brand.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Icon name={s.icon || ['choch', 'order_block', 'liquidity', 'sweep'][i]} color={brand.primary} size={48} />
               </div>
-              <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 22, color: brand.primary, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '0.01em' }}>{s.label || s.title}</div>
-              {s.sub && <div style={{ fontFamily: SANS, fontWeight: 400, fontSize: 17, color: brand.slate, lineHeight: 1.3 }}>{s.sub}</div>}
+              <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 32, color: brand.primary, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '0.01em' }}>{s.label || s.title}</div>
+              {s.sub && <div style={{ fontFamily: SANS, fontWeight: 400, fontSize: 24, color: brand.slate, lineHeight: 1.3 }}>{s.sub}</div>}
             </div>
           );
         })}
@@ -619,7 +642,7 @@ function ArrowMark({ c, fps, brand, durMs }) {
   const down = String(c.dir || '').toLowerCase() === 'down';
   const col = down ? brand.bear : brand.bull;
   return (
-    <div style={{ width: '100%', maxWidth: 520, alignSelf: 'center', opacity: t, display: 'flex', alignItems: 'center', gap: 18 }}>
+    <div style={{ width: '100%', maxWidth: 900, alignSelf: 'center', opacity: t, display: 'flex', alignItems: 'center', gap: 26 }}>
       <Icon name={down ? 'trend_down' : 'trend_up'} color={col} size={56} />
       {c.label && <div style={{ fontFamily: SANS, fontWeight: 800, fontSize: 36, color: col, letterSpacing: '-0.01em' }}>{c.label}</div>}
     </div>
@@ -635,8 +658,8 @@ function Crowd({ c, fps, brand }) {
   const flushAt = base + ms2f(c.flush_at_ms != null ? c.flush_at_ms : 1500, fps);
   const flush = interpolate(frame, [flushAt, flushAt + ms2f(750, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.in(Easing.cubic) });
   return (
-    <div style={{ width: '100%', maxWidth: 680, alignSelf: 'center' }}>
-      {(c.label || flush > 0) && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 22, letterSpacing: '0.08em', textTransform: 'uppercase', color: flush > 0.4 ? brand.bear : brand.slate }}>{flush > 0.4 ? (c.flush_label || 'FLUSHED OUT') : (c.label || 'RETAIL PILES IN')}</div>}
+    <div style={{ width: '100%', maxWidth: 1200, alignSelf: 'center' }}>
+      {(c.label || flush > 0) && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 34, letterSpacing: '0.08em', textTransform: 'uppercase', color: flush > 0.4 ? brand.bear : brand.slate }}>{flush > 0.4 ? (c.flush_label || 'FLUSHED OUT') : (c.label || 'RETAIL PILES IN')}</div>}
       <div style={{ display: 'flex', gap: 24, justifyContent: 'center', alignItems: 'flex-end', height: 130, marginTop: 14 }}>
         {Array.from({ length: n }).map((_, i) => {
           const bob = Math.sin((frame / fps) * 3 + i * 0.6) * 7 * (1 - flush);
@@ -665,8 +688,8 @@ function FairValueGap({ c, fps, brand }) {
   const draw = interpolate(frame, [base, base + ms2f(380, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
   const boxW = interpolate(frame, [base + ms2f(420, fps), base + ms2f(760, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
   return (
-    <div style={{ width: '100%', maxWidth: 680, alignSelf: 'center' }}>
-      {c.label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 22, letterSpacing: '0.08em', textTransform: 'uppercase', color: brand.slate, marginBottom: 10 }}>{c.label}</div>}
+    <div style={{ width: '100%', maxWidth: 1200, alignSelf: 'center' }}>
+      {c.label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 34, letterSpacing: '0.08em', textTransform: 'uppercase', color: brand.slate, marginBottom: 10 }}>{c.label}</div>}
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         {cands.map((cd, i) => {
           const t = interpolate(frame, [base + ms2f(i * 90, fps), base + ms2f(i * 90 + 240, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
@@ -701,7 +724,7 @@ function StructureBreak({ c, fps, brand }) {
   const tagT = interpolate(frame, [base + ms2f(700, fps), base + ms2f(960, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.6)) });
   const col = choch ? brand.accent : brand.bull;
   return (
-    <div style={{ width: '100%', maxWidth: 680, alignSelf: 'center' }}>
+    <div style={{ width: '100%', maxWidth: 1200, alignSelf: 'center' }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         <line x1={30} y1={lvl} x2={30 + 440 * lineT} y2={lvl} stroke={brand.slate} strokeWidth="2" strokeDasharray="7 6" />
         <path d={path} fill="none" stroke={brand.primary} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" pathLength="1" strokeDasharray="1" strokeDashoffset={1 - draw} />
@@ -731,7 +754,7 @@ function TradePlan({ c, fps, brand }) {
     </g>
   );
   return (
-    <div style={{ width: '100%', maxWidth: 680, alignSelf: 'center' }}>
+    <div style={{ width: '100%', maxWidth: 1200, alignSelf: 'center' }}>
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         {/* risk zone (entry→SL) and reward zone (entry→TP) */}
         <rect x={60} y={Math.min(entry, sl)} width={420 * grow} height={Math.abs(entry - sl)} fill="rgba(210,56,79,0.14)" />
@@ -809,7 +832,15 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
       <AbsoluteFill style={{ borderRadius: inset ? 20 : 0, overflow: 'hidden', boxShadow: inset ? '0 20px 60px rgba(11,30,64,0.25)' : 'none', border: inset ? '2px solid #14315F' : 'none', background: '#FFFFFF' }}>
         <AbsoluteFill style={{ transform: `scale(${kb})` }}>
           {playing ? (
-            <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} muted objectFit="contain" style={fillVid} />
+            <AbsoluteFill>
+              {/* C5: hold the last frame so the chart never goes blank when the clip ends before the segment */}
+              <Freeze frame={ms2f((chart.play_to||0)*1000, fps)}>
+                <Video src={srcUrl} muted objectFit="contain" style={fillVid} />
+              </Freeze>
+              <Sequence from={0} durationInFrames={Math.max(1, ms2f(((chart.play_to||0)-(chart.play_from||0))*1000, fps))}>
+                <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} muted objectFit="contain" style={fillVid} />
+              </Sequence>
+            </AbsoluteFill>
           ) : chart.freeze_frame_url ? (
             <Img src={chart.freeze_frame_url} style={fill} />
           ) : (
