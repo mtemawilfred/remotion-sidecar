@@ -21,7 +21,8 @@ import { AbsoluteFill, Freeze, Img, Sequence, interpolate, Easing, useCurrentFra
 import { Video, Audio } from '@remotion/media';
 import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
 import { loadFont as loadJetBrainsMono } from '@remotion/google-fonts/JetBrainsMono';
-import { fitText } from '@remotion/layout-utils';
+import { fitText, measureText } from '@remotion/layout-utils';
+import { scaleLinear } from 'd3';
 
 // Load ONLY the weights/subset we actually use. Default loadFont() pulls every
 // weight + italic (~96 network requests per render tab) which slows startup badly
@@ -200,8 +201,10 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   const mode = seg.canvas_mode || 'graphics';
   const showChart = mode !== 'graphics' && seg.chart && seg.chart.visible !== false;
   const comps = seg.components || [];
+  // CTA full-screen only on actual cta/outro scenes — never lets a stray outro_cta
+  // hijack a chart/practice segment (the "Execute This With Confidence" bug).
   const outro = comps.find(c => c.type === 'outro_cta');
-  if (outro) return <OutroCTA c={outro} seg={seg} fps={fps} brand={brand} />;
+  if (outro && (seg.phase === 'outro' || seg.phase === 'cta')) return <OutroCTA c={outro} seg={seg} fps={fps} brand={brand} />;
 
   // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
   let flow = comps.filter(c => !['outro_cta', 'annotation', 'brand_bug'].includes(c.type));
@@ -209,6 +212,10 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   if (seg.phase === 'hook' && mode === 'graphics' && !flow.some(c => GRAPHIC_TYPES.includes(c.type))) {
     flow = [...flow, { type: 'candle_cluster', bias: seg.chart_bias || 'Bearish', _auto: true, enter_at_ms: 200 }];
   }
+  // One chart graphic per scene (one focal chart) — drop extra chart components.
+  const CHART_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'fvg', 'structure_break', 'trade_plan'];
+  let seenChart = false;
+  flow = flow.filter(c => { if (CHART_TYPES.includes(c.type)) { if (seenChart) return false; seenChart = true; } return true; });
   // C4: one focal point — keep at most 3 elements, highest importance first (stable order).
   if (flow.length > 3) {
     const keep = flow.map((c, i) => i)
@@ -263,24 +270,38 @@ function BackgroundTreatment({ flow, seg, fps, brand }) {
 }
 
 // motion-graphic (non-text) primitive types
-const GRAPHIC_TYPES = ['candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'fvg', 'structure_break', 'trade_plan'];
+const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'fvg', 'structure_break', 'trade_plan'];
 
 // rough intrinsic heights (px) so the stack can auto-fit without DOM measurement
 function estHeight(c) {
   if (c.type === 'roadmap' || c.type === 'concept_list') { const n = (c.items || c.rows || []).length || 3; return 50 + n * 70; }
   if (c.type === 'table') { const n = (c.rows || []).length || 3; return n * 62; }
+  if (c.type === 'flow_steps') { const n = (c.steps || c.items || []).length || 4; return n > 4 ? 470 : 300; }
   const H = { hook_text: 240, heading: 150, concept_card: 250, callback_card: 200, stat_callout: 240,
-    candle_cluster: 320, zone_box: 300, liquidity_run: 320, flow_steps: 300, arrow: 120, diagram: 140,
-    crowd: 210, fvg: 320, structure_break: 320, trade_plan: 320 };
+    chart_concept: 460, candle_cluster: 460, zone_box: 460, liquidity_run: 460, flow_steps: 300, arrow: 120, diagram: 140,
+    crowd: 210, fvg: 460, structure_break: 460, trade_plan: 460 };
   return H[c.type] || 150;
+}
+// Real measured height for text-heavy cards (best practice — measure, don't guess),
+// so the stack's fit-scale knows the true height and never overflows. Falls back to estHeight.
+function measuredHeight(c, width) {
+  try {
+    const avail = Math.max(220, width - 100);
+    const lines = (text, fs, fw) => text ? Math.max(1, Math.ceil(measureText({ text: String(text), fontFamily: POPPINS, fontSize: fs, fontWeight: fw }).width / avail)) : 0;
+    if (c.type === 'concept_card') return 84 + lines(c.title, 56, '700') * 66 + (c.title && c.body ? 18 : 0) + lines(c.body, 40, '400') * 56;
+    if (c.type === 'callback_card') return 68 + 48 + lines(c.title, 50, '700') * 60 + lines(c.body, 38, '400') * 53;
+  } catch (e) {}
+  return estHeight(c);
 }
 const IMPORTANCE_RANK = { critical: 0, primary: 1, secondary: 2 };
 
 // Fitted top-anchored stack: never clips (auto-scales to fit), never jams (slot per item),
 // vertically centred when it fits. Replaces the old centre+overflow:hidden approach.
 function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
+  const kf = useCurrentFrame();
   const gap = flow.length >= 4 ? 18 : 28;
-  const est = flow.reduce((a, c) => a + estHeight(c), 0) + gap * Math.max(0, flow.length - 1);
+  // measured heights (real text fit) so the stack never overflows the safe area
+  const est = flow.reduce((a, c) => a + measuredHeight(c, zone.width), 0) + gap * Math.max(0, flow.length - 1);
   const fitScale = Math.min(1, zone.height / Math.max(1, est));
   const usedH = est * fitScale;
   const offsetY = Math.max(0, (zone.height - usedH) / 2);
@@ -297,7 +318,14 @@ function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
         {flow.map((c, i) => {
           const baseEnter = (c.enter_at_ms == null) ? autoTime[i] : c.enter_at_ms;
           const cc = { ...c, enter_at_ms: baseEnter + settleMs };
-          return <FlowComponent key={i} c={cc} idx={i} seg={seg} fps={fps} brand={brand} zoneW={zone.width * fitScale} />;
+          // keep-alive: every element keeps a subtle idle; the focal element gets a gentle ~3s pulse.
+          const idleY = Math.sin((kf / fps) * 0.85 + i * 1.4) * 2.5;
+          const emph = i === 0 ? 1 + 0.012 * Math.sin((((kf / fps) % 3) / 3) * Math.PI) : 1;
+          return (
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', transform: `translateY(${idleY}px) scale(${emph})`, transformOrigin: 'center' }}>
+              <FlowComponent c={cc} idx={i} seg={seg} fps={fps} brand={brand} zoneW={zone.width * fitScale} />
+            </div>
+          );
         })}
       </div>
     </div>
@@ -317,16 +345,18 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'concept_list':   return <Roadmap {...p} />;
     case 'table':          return <TableC {...p} />;
     case 'stat_callout':   return <StatCallout {...p} />;
-    // ── motion-graphic primitives ──
-    case 'candle_cluster': return <CandleCluster {...p} />;
-    case 'zone_box':       return <ZoneBox {...p} />;
-    case 'liquidity_run':  return <LiquidityRun {...p} />;
+    // ── chart graphics → ONE coherent D3 ChartConcept (replaces the 6 primitives) ──
+    case 'chart_concept':
+    case 'candle_cluster':
+    case 'zone_box':
+    case 'liquidity_run':
+    case 'fvg':
+    case 'structure_break':
+    case 'trade_plan':     return <ChartConcept {...p} />;
+    // ── other motion-graphic primitives ──
     case 'flow_steps':     return <FlowSteps {...p} />;
     case 'arrow':          return <ArrowMark {...p} />;
     case 'crowd':          return <Crowd {...p} />;
-    case 'fvg':            return <FairValueGap {...p} />;
-    case 'structure_break':return <StructureBreak {...p} />;
-    case 'trade_plan':     return <TradePlan {...p} />;
     case 'diagram':        return <Diagram {...p} />;
     default:               return <GenericCard {...p} />;
   }
@@ -600,36 +630,35 @@ function LiquidityRun({ c, fps, brand, durMs }) {
   );
 }
 
-// ── FlowSteps: a spine that draws itself + step cards with drawn icons (the A-flow look) ──
-function FlowSteps({ c, fps, brand, durMs, zoneW }) {
+// ── FlowSteps: numbered step cards with drawn icons. Shows ALL steps (wraps to 2 rows > 4) ──
+function FlowSteps({ c, fps, brand }) {
   const frame = useCurrentFrame();
-  const steps = (c.steps || c.items || []).slice(0, 4).map(s => typeof s === 'string' ? { label: s } : s);
+  const steps = (c.steps || c.items || []).map(s => typeof s === 'string' ? { label: s } : s);
   if (!steps.length) return null;
+  const n = steps.length, wrap = n > 4, perRow = wrap ? Math.ceil(n / 2) : n;
+  const basis = `calc(${(100 / perRow).toFixed(2)}% - 16px)`;
+  const compact = wrap || n >= 4;
+  const ib = compact ? 64 : 88, ic = compact ? 36 : 48, lf = compact ? 24 : 32, sf = compact ? 18 : 24, bd = compact ? 40 : 48;
   const base = ms2f(c.enter_at_ms || 150, fps);
-  const spineT = interpolate(frame, [base, base + ms2f(520, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+  const fallback = ['choch', 'order_block', 'liquidity', 'sweep', 'entry', 'check', 'trend_up', 'candle'];
   return (
-    <div style={{ width: '100%' }}>
-      <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', alignItems: 'stretch', gap: 16 }}>
-        {/* spine */}
-        <div style={{ position: 'absolute', top: '50%', left: '4%', width: '92%', height: 4, borderRadius: 4, transform: 'translateY(-50%)',
-          background: `linear-gradient(90deg, ${brand.primary}, ${brand.accent})`, transformOrigin: 'left center', scale: `${spineT} 1`, opacity: 0.7 }} />
-        {steps.map((s, i) => {
-          const settle = base + ms2f(220 + i * 220, fps);
-          const e = entrance('pop', frame, settle, fps, 420);
-          return (
-            <div key={i} style={{ ...e, position: 'relative', flex: 1, background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 22,
-              boxShadow: '0 14px 36px rgba(11,30,64,0.08)', padding: '32px 22px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 16 }}>
-              <div style={{ position: 'absolute', top: -20, left: -16, width: 48, height: 48, borderRadius: '50%', background: brand.accent, color: '#fff',
-                fontFamily: SANS, fontWeight: 800, fontSize: 23, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
-              <div style={{ width: 88, height: 88, borderRadius: 18, background: brand.panel, border: `1px solid ${brand.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Icon name={s.icon || ['choch', 'order_block', 'liquidity', 'sweep'][i]} color={brand.primary} size={48} />
-              </div>
-              <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 32, color: brand.primary, lineHeight: 1.15, textTransform: 'uppercase', letterSpacing: '0.01em' }}>{s.label || s.title}</div>
-              {s.sub && <div style={{ fontFamily: SANS, fontWeight: 400, fontSize: 24, color: brand.slate, lineHeight: 1.3 }}>{s.sub}</div>}
+    <div style={{ width: '100%', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'stretch', gap: 16 }}>
+      {steps.map((s, i) => {
+        const settle = base + ms2f(160 + i * 190, fps);
+        const e = entrance('pop', frame, settle, fps, 420);
+        return (
+          <div key={i} style={{ ...e, position: 'relative', flex: `1 1 ${basis}`, maxWidth: basis, boxSizing: 'border-box', background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 20,
+            boxShadow: '0 12px 30px rgba(11,30,64,0.08)', padding: compact ? '24px 16px' : '32px 22px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 12 }}>
+            <div style={{ position: 'absolute', top: -bd * 0.42, left: -bd * 0.34, width: bd, height: bd, borderRadius: '50%', background: brand.accent, color: '#fff',
+              fontFamily: SANS, fontWeight: 800, fontSize: Math.round(bd * 0.46), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
+            <div style={{ width: ib, height: ib, borderRadius: 16, background: brand.panel, border: `1px solid ${brand.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name={s.icon || fallback[i % fallback.length]} color={brand.primary} size={ic} />
             </div>
-          );
-        })}
-      </div>
+            <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: lf, color: brand.primary, lineHeight: 1.15 }}>{stripEmoji(s.label || s.title)}</div>
+            {s.sub && <div style={{ fontFamily: SANS, fontWeight: 400, fontSize: sf, color: brand.slate, lineHeight: 1.3 }}>{stripEmoji(s.sub)}</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -771,6 +800,143 @@ function TradePlan({ c, fps, brand }) {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// ChartConcept — ONE coherent, data-driven candlestick chart with the SMC feature
+// marked ON it (D3 scales for math, React SVG, all animation via useCurrentFrame).
+// Replaces the 6 separate chart primitives. Deterministic synthetic data.
+// ════════════════════════════════════════════════════════════════════════════
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const PATTERNS = {
+  bearish_smc: [0.40, 0.46, 0.42, 0.52, 0.58, 0.54, 0.64, 0.72, 0.78, 0.70, 0.58, 0.50, 0.55, 0.44, 0.34, 0.26],
+  bullish_smc: [0.60, 0.54, 0.58, 0.48, 0.42, 0.46, 0.36, 0.28, 0.22, 0.30, 0.42, 0.50, 0.45, 0.56, 0.66, 0.74],
+  range:       [0.46, 0.54, 0.45, 0.55, 0.47, 0.56, 0.44, 0.55, 0.46, 0.54, 0.45, 0.55, 0.47, 0.53, 0.46, 0.54],
+};
+function buildSeries(pattern, seed) {
+  const rnd = mulberry32((seed | 0) + 1);
+  const base = PATTERNS[pattern] || PATTERNS.bearish_smc;
+  const closes = base.map(v => Math.max(0.07, Math.min(0.93, v + (rnd() - 0.5) * 0.03)));
+  const cands = closes.map((c, i) => {
+    const o = i === 0 ? Math.max(0.07, c - 0.04) : closes[i - 1];
+    const up = c >= o, wick = 0.012 + rnd() * 0.028;
+    return { o, c, up, hi: Math.min(0.99, Math.max(o, c) + wick), lo: Math.max(0.01, Math.min(o, c) - wick) };
+  });
+  const bearish = pattern !== 'bullish_smc';
+  let impI = 1, impMax = 0; for (let i = 1; i < cands.length; i++) { const d = Math.abs(cands[i].c - cands[i].o); if (d > impMax) { impMax = d; impI = i; } }
+  return { cands, closes, impI, bearish };
+}
+function featOf(c) {
+  if (c.feature) return c.feature;
+  switch (c.type) {
+    case 'structure_break': return String(c.kind || 'bos').toLowerCase().includes('choch') ? 'choch' : 'bos';
+    case 'zone_box': return 'order_block';
+    case 'liquidity_run': return 'liquidity_sweep';
+    case 'fvg': return 'fvg';
+    case 'trade_plan': return 'trade_plan';
+    default: return 'candles';
+  }
+}
+// SVG label tag sized to its text (never clips), centred on (cx, anchored top at ty)
+function SvgTag({ cx, ty, text, fill, fs = 19 }) {
+  const w = 16 + String(text).length * fs * 0.58, h = fs + 14;
+  return (
+    <g>
+      <rect x={cx - w / 2} y={ty} width={w} height={h} rx="6" fill={fill} />
+      <text x={cx} y={ty + h / 2} fontFamily={MONO} fontSize={fs} fontWeight="700" fill="#fff" textAnchor="middle" dominantBaseline="central">{text}</text>
+    </g>
+  );
+}
+function ChartConcept({ c, seg, fps, brand, idx }) {
+  const frame = useCurrentFrame();
+  const pattern = c.pattern || (String(c.bias || seg.chart_bias || '').toLowerCase().includes('bull') ? 'bullish_smc' : 'bearish_smc');
+  const feature = featOf(c);
+  const seed = (seg.segment_id || 0) * 7 + (idx || 0);
+  const { cands, closes, impI, bearish } = buildSeries(pattern, seed);
+  const W = 900, H = 470, padX = 44, padTop = 54, padBot = 44, n = cands.length;
+  const x = scaleLinear().domain([0, n - 1]).range([padX, W - padX]);
+  const y = scaleLinear().domain([0, 1]).range([H - padBot, padTop]);
+  const slot = (W - 2 * padX) / (n - 1), bw = Math.min(26, slot * 0.6);
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const featStart = base + ms2f(70 * n + 140, fps);
+  const draw = interpolate(frame, [featStart, featStart + ms2f(420, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1) });
+  const tagT = interpolate(frame, [featStart + ms2f(380, fps), featStart + ms2f(700, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.34, 1.56, 0.64, 1) });
+
+  // landmarks
+  const half = Math.floor(n * 0.6);
+  const lvlP = bearish ? Math.min(...closes.slice(0, half)) : Math.max(...closes.slice(0, half));
+  let breakIdx = -1; for (let i = half; i < n; i++) { if (bearish ? closes[i] < lvlP : closes[i] > lvlP) { breakIdx = i; break; } }
+  if (breakIdx < 0) breakIdx = Math.min(n - 1, impI + 1);
+  const swingExtP = bearish ? Math.max(...closes) : Math.min(...closes);
+  const swingExtI = bearish ? closes.indexOf(Math.max(...closes)) : closes.indexOf(Math.min(...closes));
+
+  const overlay = () => {
+    if (feature === 'bos' || feature === 'choch') {
+      const yl = y(lvlP), xb = x(breakIdx);
+      return (<g>
+        <line x1={padX} y1={yl} x2={padX + (W - 2 * padX) * draw} y2={yl} stroke={brand.slate} strokeWidth="2.5" strokeDasharray="8 6" />
+        <line x1={xb} y1={yl} x2={xb} y2={y(closes[breakIdx])} stroke={feature === 'choch' ? brand.accent : brand.bull} strokeWidth="4" strokeLinecap="round" opacity={draw} />
+        {tagT > 0 && <g transform={`scale(${0.85 + 0.15 * tagT})`} style={{ transformOrigin: `${xb}px ${yl}px`, transformBox: 'fill-box' }}><SvgTag cx={xb} ty={yl - 38} text={feature === 'choch' ? 'CHoCH' : 'BOS'} fill={feature === 'choch' ? brand.accent : brand.bull} /></g>}
+      </g>);
+    }
+    if (feature === 'order_block') {
+      const i = Math.max(1, impI - 1), cd = cands[i];
+      const yt = y(Math.max(cd.o, cd.c)), yb = y(Math.min(cd.o, cd.c));
+      return (<g>
+        <rect x={x(i) - slot * 0.7} y={yt} width={Math.max(1, (W - padX - (x(i) - slot * 0.7)) * draw)} height={(yb - yt)} fill="rgba(192,83,31,0.14)" stroke={brand.accent} strokeWidth="2.4" />
+        {tagT > 0 && <SvgTag cx={x(i)} ty={yt - 38} text={c.label && c.label.length < 16 ? c.label.toUpperCase() : 'ORDER BLOCK'} fill={brand.accent} />}
+      </g>);
+    }
+    if (feature === 'fvg') {
+      const i = impI, top = y(cands[i - 1] ? cands[i - 1].hi : cands[i].hi), bot = y(cands[i + 1] ? cands[i + 1].lo : cands[i].lo);
+      return (<g>
+        <rect x={x(i) - slot * 0.6} y={Math.min(top, bot)} width={Math.max(1, slot * 1.6 * draw)} height={Math.abs(bot - top)} fill="rgba(110,134,201,0.20)" stroke={brand.periwinkle} strokeWidth="2.2" strokeDasharray="6 5" />
+        {tagT > 0 && <SvgTag cx={x(i)} ty={Math.min(top, bot) - 36} text="FVG" fill={brand.periwinkle} />}
+      </g>);
+    }
+    if (feature === 'liquidity_sweep') {
+      const yl = y(swingExtP), xs = x(swingExtI);
+      return (<g>
+        <line x1={padX} y1={yl} x2={padX + (W - 2 * padX) * draw} y2={yl} stroke={brand.periwinkle} strokeWidth="2.5" strokeDasharray="8 6" />
+        <line x1={xs} y1={yl} x2={xs} y2={yl - 34 * tagT} stroke={brand.bear} strokeWidth="5" strokeLinecap="round" />
+        {tagT > 0 && <SvgTag cx={xs} ty={yl - 78} text="LIQUIDITY SWEPT" fill={brand.bear} />}
+      </g>);
+    }
+    if (feature === 'trade_plan') {
+      const entryP = closes[Math.min(n - 1, impI + 2)];
+      const slP = bearish ? Math.min(0.97, swingExtP + 0.05) : Math.max(0.03, swingExtP - 0.05);
+      const tpP = bearish ? Math.min(...closes) : Math.max(...closes);
+      const row = (p, col, lab) => (<g opacity={draw}><line x1={padX} y1={y(p)} x2={W - padX} y2={y(p)} stroke={col} strokeWidth="3" /><SvgTag cx={W - padX - 56} ty={y(p) - 13} text={lab} fill={col} fs={16} /></g>);
+      return (<g>
+        <rect x={padX} y={Math.min(y(entryP), y(slP))} width={(W - 2 * padX)} height={Math.abs(y(entryP) - y(slP)) * draw} fill="rgba(210,56,79,0.12)" />
+        <rect x={padX} y={Math.min(y(entryP), y(tpP))} width={(W - 2 * padX)} height={Math.abs(y(entryP) - y(tpP)) * draw} fill="rgba(31,157,107,0.12)" />
+        {row(slP, brand.bear, 'STOP')}{row(entryP, brand.primary, 'ENTRY')}{row(tpP, brand.bull, 'TARGET')}
+        {tagT > 0 && <SvgTag cx={padX + 80} ty={y(tpP) + (bearish ? 14 : -42)} text={c.rr ? `R:R 1:${c.rr}` : 'R:R 1:3'} fill={brand.accent} />}
+      </g>);
+    }
+    return null;
+  };
+
+  return (
+    <div style={{ width: '100%', maxWidth: 1280, alignSelf: 'center' }}>
+      {c.label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 30, letterSpacing: '0.06em', textTransform: 'uppercase', color: brand.slate, marginBottom: 12 }}>{c.label}</div>}
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
+        {cands.map((cd, i) => {
+          const settle = base + ms2f(i * 70, fps);
+          const t = interpolate(frame, [settle, settle + ms2f(220, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1) });
+          if (t <= 0) return null;
+          const cx = x(i), col = cd.up ? brand.bull : brand.bear;
+          const yO = y(cd.o), yC = y(cd.c), top = Math.min(yO, yC), bot = Math.max(yO, yC);
+          const mid = (top + bot) / 2, bh = Math.max(3, (bot - top)) * t;
+          return (<g key={i} opacity={t}>
+            <line x1={cx} y1={y(cd.hi)} x2={cx} y2={y(cd.lo)} stroke={col} strokeWidth="2.2" strokeLinecap="round" opacity={0.85} />
+            <rect x={cx - bw / 2} y={mid - bh / 2} width={bw} height={bh} rx="2" fill={col} />
+          </g>);
+        })}
+        {overlay()}
+      </svg>
+    </div>
+  );
+}
+
 function Annotation({ c, seg, fps, brand, mode, chartAnchor, chartBox }) {
   const frame = useCurrentFrame();
   const settle = ms2f(c.enter_at_ms || 200, fps);
@@ -791,19 +957,26 @@ function BrandBug({ brand }) {
   return <div style={{ position: 'absolute', bottom: 34, right: 44, fontFamily: SANS, fontWeight: 700, fontSize: 26, color: brand.primary, opacity: 0.3 }}>PipsGravity</div>;
 }
 
+// CTA/outro scene — on the SHARED white grid (no navy takeover), dynamic + keep-alive.
 function OutroCTA({ c, seg, fps, brand }) {
   const frame = useCurrentFrame();
   const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-  const h = entrance('rise', frame, ms2f(120, fps), fps, 600);
-  const btn = entrance('pop', frame, ms2f(c.enter_at_ms || 600, fps), fps, 420);
+  const baseMs = c.enter_at_ms || 120;
+  const btn = entrance('pop', frame, ms2f(baseMs + 900, fps), fps, 460);
+  const link = entrance('rise', frame, ms2f(baseMs + 1400, fps), fps, 360);
+  const pulse = 1 + 0.02 * Math.sin((frame / fps) * 1.3 * Math.PI * 2); // keep-alive breathing
+  const fs = fitSize(c.headline, 1520, 900, 104, 132);
   return (
-    <AbsoluteFill style={{ background: brand.primary, justifyContent: 'center', alignItems: 'center', opacity: fadeIn }}>
-      <div style={{ position: 'absolute', top: '-12%', left: '-6%', width: 1200, height: 1200, borderRadius: '50%', background: 'radial-gradient(circle, rgba(192,83,31,0.18) 0%, rgba(192,83,31,0) 60%)' }} />
-      <div style={{ textAlign: 'center', padding: '0 200px', maxWidth: 1500 }}>
-        <div style={{ ...h, fontFamily: SANS, fontWeight: 900, fontSize: 76, color: '#fff', lineHeight: 1.12, letterSpacing: '-0.02em' }}>{c.headline}</div>
-        {c.button && <div style={{ ...btn, display: 'inline-block', marginTop: 36, background: brand.accent, color: '#fff', fontFamily: SANS, fontWeight: 700, fontSize: 36, padding: '18px 40px', borderRadius: 14 }}>{c.button}</div>}
-        {c.link && <div style={{ ...btn, fontFamily: SANS, fontSize: 28, color: '#AEBBD2', marginTop: 22 }}>{c.link}</div>}
+    <AbsoluteFill style={{ justifyContent: 'center', alignItems: 'center', opacity: fadeIn }}>
+      <div style={{ position: 'absolute', top: '-10%', right: '-8%', width: 1100, height: 1100, borderRadius: '50%', background: 'radial-gradient(circle, rgba(192,83,31,0.10) 0%, rgba(192,83,31,0) 60%)' }} />
+      <div style={{ textAlign: 'center', padding: '0 180px', maxWidth: 1560 }}>
+        <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: fs, color: brand.primary, lineHeight: 1.1, letterSpacing: '-0.02em' }}>
+          <KineticText text={c.headline} settleMs={baseMs} fps={fps} kind="rise" perWordMs={80} durMs={460} />
+        </div>
+        {c.button && <div style={{ ...btn, display: 'inline-block', marginTop: 44, background: brand.accent, color: '#fff', fontFamily: SANS, fontWeight: 700, fontSize: 42, padding: '22px 52px', borderRadius: 16, transform: `${btn.transform || ''} scale(${pulse})`, boxShadow: '0 14px 40px rgba(192,83,31,0.30)' }}>{c.button}</div>}
+        {c.link && <div style={{ ...link, fontFamily: SANS, fontSize: 32, color: brand.slate, marginTop: 24 }}>{c.link}</div>}
       </div>
+      <BrandBug brand={brand} />
       {seg.audio_url && <Audio src={seg.audio_url} />}
       {seg.captions && seg.captions.length > 0 && <Captions captions={seg.captions} fps={fps} brand={brand} />}
     </AbsoluteFill>
@@ -820,7 +993,15 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
     const sFrom = cam.from.scale ?? INSET_SCALE_DEFAULT, sTo = cam.to.scale ?? 1;
     const from = resolveCentre(cam.from, sFrom), to = resolveCentre(cam.to, sTo);
     scale = sFrom + (sTo - sFrom) * t; cx = from.cx + (to.cx - from.cx) * t; cy = from.cy + (to.cy - from.cy) * t;
-  } else if (mode === 'chart_full') { scale = 1; cx = CANVAS_W/2; cy = CANVAS_H/2; }
+  } else if (mode === 'chart_full') {
+    // #5: play full, then at clip end zoom OUT to the inset (no long full-screen freeze).
+    const cf = ms2f(((chart.play_to||0) - (chart.play_from||0)) * 1000, fps);
+    const zt = interpolate(frame, [cf, cf + ms2f(700, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.cubic) });
+    const sTo = INSET_SCALE_DEFAULT, toC = resolveCentre({ anchor: 'center_right' }, sTo);
+    scale = 1 + (sTo - 1) * zt;
+    cx = CANVAS_W/2 + (toC.cx - CANVAS_W/2) * zt;
+    cy = CANVAS_H/2 + (toC.cy - CANVAS_H/2) * zt;
+  }
   else { const s = chart.scale || INSET_SCALE_DEFAULT; const c = resolveCentre({ anchor: chart.anchor }, s); scale = s; cx = c.cx; cy = c.cy; }
 
   const playing = mode === 'chart_full' && chart.state !== 'frozen';
