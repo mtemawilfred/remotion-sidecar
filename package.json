@@ -17,6 +17,7 @@
     "@remotion/captions": "4.0.481",
     "@remotion/google-fonts": "4.0.481",
     "@remotion/layout-utils": "4.0.481",
+    "d3": "7.9.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "google-auth-library": "9.15.1"
