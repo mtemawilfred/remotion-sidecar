@@ -288,12 +288,17 @@ function estHeight(c) {
 }
 // Real measured height for text-heavy cards (best practice — measure, don't guess),
 // so the stack's fit-scale knows the true height and never overflows. Falls back to estHeight.
+const CHART_HEIGHT_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'fvg', 'structure_break', 'trade_plan'];
 function measuredHeight(c, width) {
   try {
+    // chart graphics render as an SVG at aspect ~470/900 (≈0.522) up to maxWidth 1280, + label
+    if (CHART_HEIGHT_TYPES.includes(c.type)) return Math.round(Math.min(width, 1280) * 0.522) + (c.label ? 52 : 0) + 12;
     const avail = Math.max(220, width - 100);
     const lines = (text, fs, fw) => text ? Math.max(1, Math.ceil(measureText({ text: String(text), fontFamily: POPPINS, fontSize: fs, fontWeight: fw }).width / avail)) : 0;
     if (c.type === 'concept_card') return 84 + lines(c.title, 56, '700') * 66 + (c.title && c.body ? 18 : 0) + lines(c.body, 40, '400') * 56;
     if (c.type === 'callback_card') return 68 + 48 + lines(c.title, 50, '700') * 60 + lines(c.body, 38, '400') * 53;
+    if (c.type === 'heading') { const fs = 96; return lines(c.title || c.primary, Math.min(fs, 96), '900') * 70 + ((c.subtitle || c.secondary) ? 60 : 0); }
+    if (c.type === 'hook_text') return lines(c.primary, 96, '900') * 76 + (c.secondary ? 60 : 0);
   } catch (e) {}
   return estHeight(c);
 }
@@ -303,27 +308,13 @@ const IMPORTANCE_RANK = { critical: 0, primary: 1, secondary: 2 };
 // vertically centred when it fits. Replaces the old centre+overflow:hidden approach.
 function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
   const kf = useCurrentFrame();
-  const scaleC = useCurrentScale();
-  const stackRef = React.useRef(null);
-  const [measured, setMeasured] = React.useState(null);
-  const [delayHandle] = React.useState(() => delayRender('measure-graphics-stack'));
   const gap = flow.length >= 4 ? 18 : 28;
-  // pre-measure estimate (text-measured); replaced below by the REAL rendered height
-  const est = flow.reduce((a, c) => a + measuredHeight(c, zone.width), 0) + gap * Math.max(0, flow.length - 1);
-  const estFit = Math.min(1, (zone.height * FIT_MARGIN) / Math.max(1, est));
-  // Measure the ACTUAL rendered stack height (getBoundingClientRect ÷ useCurrentScale, undo estFit)
-  // and fit to it — guarantees the stack never overflows, regardless of estimate error.
-  React.useEffect(() => {
-    try {
-      if (stackRef.current) {
-        const natural = stackRef.current.getBoundingClientRect().height / (scaleC || 1) / Math.max(0.001, estFit);
-        if (natural > 0 && isFinite(natural)) setMeasured(natural);
-      }
-    } catch (e) {}
-    continueRender(delayHandle);
-  }, []);
-  const fitScale = measured ? Math.min(1, (zone.height * FIT_MARGIN) / Math.max(1, measured)) : estFit;
-  const usedH = (measured || est) * fitScale;
+  // accurate, deterministic height (measureText for text, geometry for the chart) — memoised so it
+  // isn't recomputed every frame. No delayRender/DOM-measure (that blocked the pipeline → OOM).
+  const sig = flow.map(c => `${c.type}:${(c.title || '') + (c.body || '') + (c.headline || '') + (c.label || '')}`).join('|') + '#' + Math.round(zone.width);
+  const est = React.useMemo(() => flow.reduce((a, c) => a + measuredHeight(c, zone.width), 0) + gap * Math.max(0, flow.length - 1), [sig, gap]);
+  const fitScale = Math.min(1, (zone.height * FIT_MARGIN) / Math.max(1, est));
+  const usedH = est * fitScale;
   const offsetY = Math.max(0, (zone.height - usedH) / 2);
   const settleMs = settleF ? (settleF / fps) * 1000 : 0;
   // importance tiering: components without an explicit enter time animate in importance order
@@ -335,10 +326,10 @@ function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
     <div style={{ position: 'absolute', left: zone.left, top: zone.top, width: zone.width, height: zone.height, overflow: 'visible', ...(DEBUG_ZONE ? { outline: '4px solid red' } : {}) }}>
       {DEBUG_ZONE && (
         <div style={{ position: 'absolute', top: 2, left: 6, fontFamily: 'monospace', fontSize: 18, fontWeight: 700, color: '#c00', background: 'rgba(255,255,255,0.8)', padding: '2px 8px', zIndex: 99999, whiteSpace: 'nowrap' }}>
-          {`${seg.canvas_mode}/${seg.phase} | zone ${Math.round(zone.width)}x${Math.round(zone.height)} | est ${Math.round(est)} | meas ${measured ? Math.round(measured) : '-'} | fit ${fitScale.toFixed(2)} | n ${flow.length} [${flow.map(c => c.type).join(',')}]`}
+          {`${seg.canvas_mode}/${seg.phase} | zone ${Math.round(zone.width)}x${Math.round(zone.height)} | est ${Math.round(est)} | fit ${fitScale.toFixed(2)} | n ${flow.length} [${flow.map(c => c.type).join(',')}]`}
         </div>
       )}
-      <div ref={stackRef} style={{ position: 'absolute', top: offsetY, left: 0, width: '100%', transform: `scale(${fitScale})`, transformOrigin: '50% 0',
+      <div style={{ position: 'absolute', top: offsetY, left: 0, width: '100%', transform: `scale(${fitScale})`, transformOrigin: '50% 0',
         display: 'flex', flexDirection: 'column', gap, alignItems: 'stretch' }}>
         {flow.map((c, i) => {
           const baseEnter = (c.enter_at_ms == null) ? autoTime[i] : c.enter_at_ms;
@@ -875,7 +866,7 @@ function ChartConcept({ c, seg, fps, brand, idx }) {
   const pattern = c.pattern || (String(c.bias || seg.chart_bias || '').toLowerCase().includes('bull') ? 'bullish_smc' : 'bearish_smc');
   const feature = featOf(c);
   const seed = (seg.segment_id || 0) * 7 + (idx || 0);
-  const { cands, closes, impI, bearish } = buildSeries(pattern, seed);
+  const { cands, closes, impI, bearish } = React.useMemo(() => buildSeries(pattern, seed), [pattern, seed]);
   const W = 900, H = 470, padX = 44, padTop = 54, padBot = 44, n = cands.length;
   const x = scaleLinear().domain([0, n - 1]).range([padX, W - padX]);
   const y = scaleLinear().domain([0, 1]).range([H - padBot, padTop]);
