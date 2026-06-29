@@ -36,7 +36,7 @@ const CANVAS_W = 1920, CANVAS_H = 1080;
 const MARGIN = 110, TOP = 130, BOTTOM = 905;
 const DEBUG_ZONE = false;       // flip true for a diagnostic render: draws the graphics-zone border
 const FIT_MARGIN = 0.94;        // fit content to 94% of the zone so estimate error can't reach the clip edge
-const BGM_VOLUME = 0.1, INSET_MARGIN = 0.05, INSET_SCALE_DEFAULT = 0.42;
+const BGM_VOLUME = 0, INSET_MARGIN = 0.05, INSET_SCALE_DEFAULT = 0.42;  // bgm muted (G1) — SFX still play
 
 const ms2f = (ms, fps) => Math.round(((ms || 0) / 1000) * fps);
 
@@ -65,6 +65,9 @@ const fillVid = { width: '100%', height: '100%' };
 
 // ── varied entrance library ──────────────────────────────────────────────────
 const ENTRANCES = ['rise', 'slideL', 'pop', 'slideR', 'blur', 'spread'];
+// J4: Timing-Director effect vocabulary -> entrance kind. Emphasis effects (pulse,
+// zoom_emphasis, highlight) are handled separately by EffectWrap; countdown is its own component.
+const EFFECT_KIND = { slide: 'slideR', morph: 'slideL', fade: 'fade', pop: 'pop', zoom_emphasis: 'pop', pulse: 'rise', draw_on: 'rise', reveal_sequence: 'rise', highlight: 'rise', countdown: 'pop' };
 function entrance(kind, frame, settleF, fps, durMs = 420) {
   // guarantee a strictly-increasing range — a settle of 0 (enter_at_ms:0) must never make [0,0]
   const end = Math.max(1, settleF);
@@ -73,6 +76,7 @@ function entrance(kind, frame, settleF, fps, durMs = 420) {
   const t = interpolate(frame, [start, end], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: ease });
   if (kind === 'blur')   return { opacity: t, filter: `blur(${(1 - t) * 10}px)` };
   if (kind === 'spread') return { opacity: t, letterSpacing: `${(1 - t) * 0.12}em` };
+  if (kind === 'fade')   return { opacity: t };
   let tf;
   if (kind === 'slideL') tf = `translateX(${(1 - t) * -46}px)`;
   else if (kind === 'slideR') tf = `translateX(${(1 - t) * 46}px)`;
@@ -204,6 +208,10 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
 
   const mode = seg.canvas_mode || 'graphics';
   const showChart = mode !== 'graphics' && seg.chart && seg.chart.visible !== false;
+  // C1/C2: a chart-mode segment with no actual chart to show (e.g. the Animator put a
+  // chart_concept on a chart_full segment) would render blank. Demote it to graphics so
+  // the components fill the normal zone instead of leaving a dead screen.
+  const effMode = (mode !== 'graphics' && !showChart) ? 'graphics' : mode;
   const comps = seg.components || [];
   // CTA full-screen only on actual cta/outro scenes — never lets a stray outro_cta
   // hijack a chart/practice segment (the "Execute This With Confidence" bug).
@@ -213,7 +221,7 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
   let flow = comps.filter(c => !['outro_cta', 'annotation', 'brand_bug'].includes(c.type));
   // HOOK never renders near-blank: if only text was given, inject one animated graphic.
-  if (seg.phase === 'hook' && mode === 'graphics' && !flow.some(c => GRAPHIC_TYPES.includes(c.type))) {
+  if (seg.phase === 'hook' && effMode === 'graphics' && !flow.some(c => GRAPHIC_TYPES.includes(c.type))) {
     flow = [...flow, { type: 'candle_cluster', bias: seg.chart_bias || 'Bearish', _auto: true, enter_at_ms: 200 }];
   }
   // One chart graphic per scene (one focal chart) — drop extra chart components.
@@ -227,17 +235,17 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
       .slice(0, 3).sort((a, b) => a - b);
     flow = keep.map(i => flow[i]);
   }
-  const chartBox = chartFinalBox(seg, cam, mode);
+  const chartBox = chartFinalBox(seg, cam, effMode);
   const chartAnchor = (seg.chart && seg.chart.anchor) || (cam && cam.to && cam.to.anchor) || 'center_right';
-  const zone = graphicsZone(mode, chartBox);
+  const zone = graphicsZone(effMode, chartBox);
   const fadeIn = interpolate(frame, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   // When the chart zooms (camera present), hold graphics back until it settles into the inset.
   const settleF = (cam && cam.from && cam.to) ? Math.min(ms2f(cam.duration_ms || 700, fps), seg.frameCount) : 0;
-  const gZone = zone && (mode === 'graphics' || frame >= settleF * 0.55) ? zone : null;
+  const gZone = zone && (effMode === 'graphics' || frame >= settleF * 0.55) ? zone : null;
 
   return (
     <AbsoluteFill style={{ opacity: fadeIn }}>
-      {mode === 'graphics' && <BackgroundTreatment flow={flow} seg={seg} fps={fps} brand={brand} />}
+      {effMode === 'graphics' && <BackgroundTreatment flow={flow} seg={seg} fps={fps} brand={brand} />}
       {showChart && <ChartLayer seg={seg} srcUrl={srcUrl} fps={fps} cam={cam} mode={mode} />}
       {gZone && flow.length > 0 && <GraphicsStack flow={flow} seg={seg} fps={fps} brand={brand} zone={gZone} settleF={settleF} />}
       <BrandBug brand={brand} />
@@ -274,7 +282,7 @@ function BackgroundTreatment({ flow, seg, fps, brand }) {
 }
 
 // motion-graphic (non-text) primitive types
-const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'fvg', 'structure_break', 'trade_plan'];
+const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'countdown', 'fvg', 'structure_break', 'trade_plan'];
 
 // rough intrinsic heights (px) so the stack can auto-fit without DOM measurement
 function estHeight(c) {
@@ -292,7 +300,8 @@ const CHART_HEIGHT_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liqu
 function measuredHeight(c, width) {
   try {
     // chart graphics render as an SVG at aspect ~470/900 (≈0.522) up to maxWidth 1280, + label
-    if (CHART_HEIGHT_TYPES.includes(c.type)) return Math.round(Math.min(width, 1280) * 0.522) + (c.label ? 52 : 0) + 12;
+    if (CHART_HEIGHT_TYPES.includes(c.type)) return Math.round(Math.min(width, 1480) * 0.522) + (c.label ? 52 : 0) + 12;
+    if (c.type === 'countdown') return 240;
     const avail = Math.max(220, width - 100);
     const lines = (text, fs, fw) => text ? Math.max(1, Math.ceil(measureText({ text: String(text), fontFamily: POPPINS, fontSize: fs, fontWeight: fw }).width / avail)) : 0;
     if (c.type === 'concept_card') return 84 + lines(c.title, 56, '700') * 66 + (c.title && c.body ? 18 : 0) + lines(c.body, 40, '400') * 56;
@@ -307,7 +316,6 @@ const IMPORTANCE_RANK = { critical: 0, primary: 1, secondary: 2 };
 // Fitted top-anchored stack: never clips (auto-scales to fit), never jams (slot per item),
 // vertically centred when it fits. Replaces the old centre+overflow:hidden approach.
 function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
-  const kf = useCurrentFrame();
   const gap = flow.length >= 4 ? 18 : 28;
   // accurate, deterministic height (measureText for text, geometry for the chart) — memoised so it
   // isn't recomputed every frame. No delayRender/DOM-measure (that blocked the pipeline → OOM).
@@ -315,7 +323,7 @@ function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
   const est = React.useMemo(() => flow.reduce((a, c) => a + measuredHeight(c, zone.width), 0) + gap * Math.max(0, flow.length - 1), [sig, gap]);
   const fitScale = Math.min(1, (zone.height * FIT_MARGIN) / Math.max(1, est));
   const usedH = est * fitScale;
-  const offsetY = Math.max(0, (zone.height - usedH) / 2);
+  const offsetY = 0;  // B1: top-anchor — no centring gap; bottom band stays free for captions
   const settleMs = settleF ? (settleF / fps) * 1000 : 0;
   // importance tiering: components without an explicit enter time animate in importance order
   // (critical → primary → secondary), but keep their visual stacking order stable.
@@ -334,13 +342,12 @@ function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
         {flow.map((c, i) => {
           const baseEnter = (c.enter_at_ms == null) ? autoTime[i] : c.enter_at_ms;
           const cc = { ...c, enter_at_ms: baseEnter + settleMs };
-          // keep-alive: every element keeps a subtle idle; the focal element gets a gentle ~3s pulse.
-          const idleY = Math.sin((kf / fps) * 0.85 + i * 1.4) * 2.5;
-          const emph = i === 0 ? 1 + 0.012 * Math.sin((((kf / fps) % 3) / 3) * Math.PI) : 1;
+          // D2: no idle wobble here. Motion comes from entrances + (J4) the Timing-Director
+          // effect on the component, applied as a deliberate one-shot emphasis via EffectWrap.
           return (
-            <div key={i} style={{ display: 'flex', flexDirection: 'column', transform: `translateY(${idleY}px) scale(${emph})`, transformOrigin: 'center' }}>
+            <EffectWrap key={i} effect={c.effect} settleMs={cc.enter_at_ms} fps={fps}>
               <FlowComponent c={cc} idx={i} seg={seg} fps={fps} brand={brand} zoneW={zone.width * fitScale} />
-            </div>
+            </EffectWrap>
           );
         })}
       </div>
@@ -349,7 +356,8 @@ function GraphicsStack({ flow, seg, fps, brand, zone, settleF }) {
 }
 
 function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
-  const kind = ENTRANCES[idx % ENTRANCES.length];
+  // J4: honor the Timing-Director effect hint for the entrance; fall back to the rotating default.
+  const kind = EFFECT_KIND[c.effect] || ENTRANCES[idx % ENTRANCES.length];
   const heroDur = idx === 0 ? 640 : 320;             // vary speed: first slow, rest fast
   const p = { c, idx, seg, fps, brand, kind, durMs: heroDur, zoneW };
   switch (c.type) {
@@ -373,9 +381,48 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'flow_steps':     return <FlowSteps {...p} />;
     case 'arrow':          return <ArrowMark {...p} />;
     case 'crowd':          return <Crowd {...p} />;
+    case 'countdown':      return <Countdown {...p} />;
     case 'diagram':        return <Diagram {...p} />;
     default:               return <GenericCard {...p} />;
   }
+}
+
+// J4: emphasis effects (pulse / zoom_emphasis / highlight) applied AROUND a component's
+// settle moment — deliberate, one-shot/decaying (NOT the constant idle bounce we removed).
+function EffectWrap({ effect, settleMs, fps, children }) {
+  const frame = useCurrentFrame();
+  if (!effect || !['pulse', 'zoom_emphasis', 'highlight'].includes(effect)) return children;
+  const s = ms2f(settleMs || 0, fps);
+  if (effect === 'zoom_emphasis') {
+    const k = interpolate(frame, [s, s + ms2f(160, fps), s + ms2f(460, fps)], [1, 1.08, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.cubic) });
+    return <div style={{ transform: `scale(${k})`, transformOrigin: 'center' }}>{children}</div>;
+  }
+  if (effect === 'pulse') {
+    const decay = frame < s ? 0 : Math.max(0, 1 - (frame - s) / ms2f(1600, fps));   // a few pulses, then rest
+    const k = frame < s ? 1 : 1 + 0.05 * decay * Math.sin(((frame - s) / fps) * 2 * Math.PI * 1.6);
+    return <div style={{ transform: `scale(${k})`, transformOrigin: 'center' }}>{children}</div>;
+  }
+  const g = interpolate(frame, [s, s + ms2f(200, fps), s + ms2f(900, fps)], [0, 1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });   // highlight glow flash
+  return <div style={{ filter: `drop-shadow(0 0 ${18 * g}px rgba(192,83,31,${0.55 * g}))` }}>{children}</div>;
+}
+
+// J4: countdown primitive — a 3-2-1 tick that builds tension before a reveal.
+function Countdown({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const from = Math.max(1, Math.min(9, c.from || c.value || 3));
+  const stepF = Math.max(1, ms2f(c.step_ms || 700, fps));
+  if (frame < base) return null;
+  const idx = Math.floor((frame - base) / stepF);
+  const num = Math.max(1, from - idx);
+  const into = ((frame - base) % stepF) / stepF;
+  const pop = interpolate(into, [0, 0.18, 1], [0.6, 1.12, 1], { extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+  const op = interpolate(into, [0, 0.1, 0.8, 1], [0, 1, 1, 0.5], { extrapolateRight: 'clamp' });
+  return (
+    <div style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 220 }}>
+      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 200, color: brand.accent, transform: `scale(${pop})`, opacity: op, lineHeight: 1 }}>{num}</div>
+    </div>
+  );
 }
 
 function HookText({ c, fps, brand, zoneW }) {
@@ -574,7 +621,7 @@ function CandleCluster({ c, seg, fps, brand, durMs }) {
   const base = ms2f(c.enter_at_ms || 150, fps);
   const label = c.label || c.title;
   return (
-    <div style={{ width: '100%', maxWidth: 1280, alignSelf: 'center' }}>
+    <div style={{ width: '100%', maxWidth: 1480, alignSelf: 'center' }}>
       {label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 34, letterSpacing: '0.08em', textTransform: 'uppercase', color: brand.slate, marginBottom: 10 }}>{label}</div>}
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         {candles.map((cd, i) => {
@@ -647,7 +694,7 @@ function LiquidityRun({ c, fps, brand, durMs }) {
 }
 
 // ── FlowSteps: numbered step cards with drawn icons. Shows ALL steps (wraps to 2 rows > 4) ──
-function FlowSteps({ c, fps, brand }) {
+function FlowSteps({ c, fps, brand, seg }) {
   const frame = useCurrentFrame();
   const steps = (c.steps || c.items || []).map(s => typeof s === 'string' ? { label: s } : s);
   if (!steps.length) return null;
@@ -656,12 +703,17 @@ function FlowSteps({ c, fps, brand }) {
   const compact = wrap || n >= 4;
   const ib = compact ? 64 : 88, ic = compact ? 36 : 48, lf = compact ? 24 : 32, sf = compact ? 18 : 24, bd = compact ? 40 : 48;
   const base = ms2f(c.enter_at_ms || 150, fps);
+  // D3: reveal one card after another, spread across the segment so each lands as it's
+  // mentioned (not all at once). Per-step enter_at_ms wins when the director provides it.
+  const segF = (seg && seg.frameCount) || ms2f((seg && seg.duration_ms) || 6000, fps);
+  const avail = Math.max(ms2f(1400, fps), segF - base - ms2f(700, fps));
+  const stepGap = Math.max(ms2f(440, fps), Math.floor(avail * 0.62 / Math.max(1, n)));
   const fallback = ['choch', 'order_block', 'liquidity', 'sweep', 'entry', 'check', 'trend_up', 'candle'];
   return (
     <div style={{ width: '100%', display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'stretch', gap: 16 }}>
       {steps.map((s, i) => {
-        const settle = base + ms2f(160 + i * 190, fps);
-        const e = entrance('pop', frame, settle, fps, 420);
+        const settle = (s.enter_at_ms != null) ? ms2f(s.enter_at_ms, fps) : base + i * stepGap;
+        const e = entrance('rise', frame, settle, fps, 420);  // D2: clean rise (no pop overshoot/bounce)
         return (
           <div key={i} style={{ ...e, position: 'relative', flex: `1 1 ${basis}`, maxWidth: basis, boxSizing: 'border-box', background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 20,
             boxShadow: '0 12px 30px rgba(11,30,64,0.08)', padding: compact ? '24px 16px' : '32px 22px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 12 }}>
@@ -822,23 +874,47 @@ function TradePlan({ c, fps, brand }) {
 // Replaces the 6 separate chart primitives. Deterministic synthetic data.
 // ════════════════════════════════════════════════════════════════════════════
 function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-const PATTERNS = {
-  bearish_smc: [0.40, 0.46, 0.42, 0.52, 0.58, 0.54, 0.64, 0.72, 0.78, 0.70, 0.58, 0.50, 0.55, 0.44, 0.34, 0.26],
-  bullish_smc: [0.60, 0.54, 0.58, 0.48, 0.42, 0.46, 0.36, 0.28, 0.22, 0.30, 0.42, 0.50, 0.45, 0.56, 0.66, 0.74],
-  range:       [0.46, 0.54, 0.45, 0.55, 0.47, 0.56, 0.44, 0.55, 0.46, 0.54, 0.45, 0.55, 0.47, 0.53, 0.46, 0.54],
+// E1: each SMC concept has its OWN correctly-shaped price path (bullish reading; mirrored for
+// bearish) plus the exact landmark indices its overlay needs — so the pattern is genuinely
+// right on the candles, not a generic series with a label slapped on.
+const CONCEPTS = {
+  // Break of Structure (continuation): swing high → pullback → decisive close ABOVE it, trend continues
+  bos:             { closes: [0.24, 0.32, 0.44, 0.55, 0.49, 0.42, 0.50, 0.60, 0.69, 0.64, 0.74, 0.82, 0.79, 0.86], swingIdx: 3, breakIdx: 7 },
+  // Change of Character (reversal): downtrend of lower highs/lows → first break ABOVE the last lower high
+  choch:           { closes: [0.78, 0.68, 0.72, 0.58, 0.63, 0.49, 0.55, 0.43, 0.52, 0.63, 0.60, 0.71, 0.77],       swingIdx: 6, breakIdx: 9 },
+  // Order Block: the last down candle before the impulsive break-up; that candle's body is the zone
+  order_block:     { closes: [0.52, 0.46, 0.42, 0.45, 0.40, 0.36, 0.52, 0.66, 0.75, 0.71, 0.68, 0.74, 0.80],       obIdx: 5,    breakIdx: 8 },
+  // Liquidity Sweep: price runs BELOW a prior swing low (long wick grabs stops) then closes back & reverses
+  liquidity_sweep: { closes: [0.60, 0.52, 0.44, 0.50, 0.46, 0.53, 0.47, 0.45, 0.58, 0.66, 0.63, 0.71],             levelIdx: 2, sweepIdx: 7 },
+  // Fair Value Gap: 3-candle imbalance around a displacement candle (gap between c1 & c3)
+  fvg:             { closes: [0.38, 0.41, 0.39, 0.43, 0.42, 0.45, 0.63, 0.67, 0.64, 0.69, 0.72],                   gapIdx: 6 },
+  // Trade Plan: clean accumulation → breakout; entry/stop/target drawn by R:R ratio (E2)
+  trade_plan:      { closes: [0.46, 0.42, 0.48, 0.44, 0.50, 0.46, 0.52, 0.49, 0.55, 0.60, 0.58, 0.64] },
 };
-function buildSeries(pattern, seed) {
+function buildConcept(feature, up, seed) {
+  const spec = CONCEPTS[feature] || CONCEPTS.bos;
   const rnd = mulberry32((seed | 0) + 1);
-  const base = PATTERNS[pattern] || PATTERNS.bearish_smc;
-  const closes = base.map(v => Math.max(0.07, Math.min(0.93, v + (rnd() - 0.5) * 0.03)));
+  const closes = spec.closes
+    .map(v => up ? v : 1 - v)                                   // mirror for a bearish-reading lesson
+    .map(v => Math.max(0.08, Math.min(0.92, v + (rnd() - 0.5) * 0.02)));
+  const n = closes.length;
   const cands = closes.map((c, i) => {
-    const o = i === 0 ? Math.max(0.07, c - 0.04) : closes[i - 1];
-    const up = c >= o, wick = 0.012 + rnd() * 0.028;
-    return { o, c, up, hi: Math.min(0.99, Math.max(o, c) + wick), lo: Math.max(0.01, Math.min(o, c) - wick) };
+    const o = i === 0 ? (up ? c - 0.03 : c + 0.03) : closes[i - 1];
+    const wick = 0.012 + rnd() * 0.022;
+    return { o, c, up: c >= o, hi: Math.min(0.99, Math.max(o, c) + wick), lo: Math.max(0.01, Math.min(o, c) - wick) };
   });
-  const bearish = pattern !== 'bullish_smc';
-  let impI = 1, impMax = 0; for (let i = 1; i < cands.length; i++) { const d = Math.abs(cands[i].c - cands[i].o); if (d > impMax) { impMax = d; impI = i; } }
-  return { cands, closes, impI, bearish };
+  const marks = { ...spec, n };
+  if (feature === 'liquidity_sweep') {
+    const lvl = closes[spec.levelIdx], s = spec.sweepIdx;
+    if (up) cands[s].lo = Math.max(0.02, lvl - 0.10); else cands[s].hi = Math.min(0.98, lvl + 0.10);
+    marks.levelP = lvl;
+  }
+  if (feature === 'fvg') {
+    const i = spec.gapIdx;
+    if (cands[i].up) { cands[i - 1].hi = Math.max(cands[i - 1].o, cands[i - 1].c) + 0.005; cands[i + 1].lo = Math.min(cands[i + 1].o, cands[i + 1].c) - 0.005; }
+    else             { cands[i - 1].lo = Math.min(cands[i - 1].o, cands[i - 1].c) - 0.005; cands[i + 1].hi = Math.max(cands[i + 1].o, cands[i + 1].c) + 0.005; }
+  }
+  return { cands, closes, marks };
 }
 function featOf(c) {
   if (c.feature) return c.feature;
@@ -852,21 +928,22 @@ function featOf(c) {
   }
 }
 // SVG label tag sized to its text (never clips), centred on (cx, anchored top at ty)
-function SvgTag({ cx, ty, text, fill, fs = 19 }) {
+function SvgTag({ cx, ty, text, fill, fs = 19, maxW }) {
   const w = 16 + String(text).length * fs * 0.58, h = fs + 14;
+  const x0 = maxW ? Math.max(4, Math.min(maxW - w - 4, cx - w / 2)) : cx - w / 2;
   return (
     <g>
-      <rect x={cx - w / 2} y={ty} width={w} height={h} rx="6" fill={fill} />
-      <text x={cx} y={ty + h / 2} fontFamily={MONO} fontSize={fs} fontWeight="700" fill="#fff" textAnchor="middle" dominantBaseline="central">{text}</text>
+      <rect x={x0} y={ty} width={w} height={h} rx="6" fill={fill} />
+      <text x={x0 + w / 2} y={ty + h / 2} fontFamily={MONO} fontSize={fs} fontWeight="700" fill="#fff" textAnchor="middle" dominantBaseline="central">{text}</text>
     </g>
   );
 }
 function ChartConcept({ c, seg, fps, brand, idx }) {
   const frame = useCurrentFrame();
-  const pattern = c.pattern || (String(c.bias || seg.chart_bias || '').toLowerCase().includes('bull') ? 'bullish_smc' : 'bearish_smc');
+  const up = String(c.pattern || c.bias || seg.chart_bias || '').toLowerCase().includes('bull');
   const feature = featOf(c);
   const seed = (seg.segment_id || 0) * 7 + (idx || 0);
-  const { cands, closes, impI, bearish } = React.useMemo(() => buildSeries(pattern, seed), [pattern, seed]);
+  const { cands, closes, marks } = React.useMemo(() => buildConcept(feature, up, seed), [feature, up, seed]);
   const W = 900, H = 470, padX = 44, padTop = 54, padBot = 44, n = cands.length;
   const x = scaleLinear().domain([0, n - 1]).range([padX, W - padX]);
   const y = scaleLinear().domain([0, 1]).range([H - padBot, padTop]);
@@ -876,63 +953,69 @@ function ChartConcept({ c, seg, fps, brand, idx }) {
   const draw = interpolate(frame, [featStart, featStart + ms2f(420, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1) });
   const tagT = interpolate(frame, [featStart + ms2f(380, fps), featStart + ms2f(700, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.34, 1.56, 0.64, 1) });
 
-  // landmarks
-  const half = Math.floor(n * 0.6);
-  const lvlP = bearish ? Math.min(...closes.slice(0, half)) : Math.max(...closes.slice(0, half));
-  let breakIdx = -1; for (let i = half; i < n; i++) { if (bearish ? closes[i] < lvlP : closes[i] > lvlP) { breakIdx = i; break; } }
-  if (breakIdx < 0) breakIdx = Math.min(n - 1, impI + 1);
-  const swingExtP = bearish ? Math.max(...closes) : Math.min(...closes);
-  const swingExtI = bearish ? closes.indexOf(Math.max(...closes)) : closes.indexOf(Math.min(...closes));
-
   const overlay = () => {
     if (feature === 'bos' || feature === 'choch') {
-      const yl = y(lvlP), xb = x(breakIdx);
+      // dashed level at the swing being broken; arrow at the candle that closes through it
+      const lvlP = closes[marks.swingIdx], yl = y(lvlP), xb = x(marks.breakIdx), yb2 = y(closes[marks.breakIdx]);
+      const col = feature === 'choch' ? brand.accent : brand.bull;
+      const label = feature === 'choch' ? 'Change of Character' : 'Break of Structure';
       return (<g>
         <line x1={padX} y1={yl} x2={padX + (W - 2 * padX) * draw} y2={yl} stroke={brand.slate} strokeWidth="2.5" strokeDasharray="8 6" />
-        <line x1={xb} y1={yl} x2={xb} y2={y(closes[breakIdx])} stroke={feature === 'choch' ? brand.accent : brand.bull} strokeWidth="4" strokeLinecap="round" opacity={draw} />
-        {tagT > 0 && <g transform={`scale(${0.85 + 0.15 * tagT})`} style={{ transformOrigin: `${xb}px ${yl}px`, transformBox: 'fill-box' }}><SvgTag cx={xb} ty={yl - 38} text={feature === 'choch' ? 'CHoCH' : 'BOS'} fill={feature === 'choch' ? brand.accent : brand.bull} /></g>}
+        <line x1={xb} y1={yl} x2={xb} y2={yb2} stroke={col} strokeWidth="4" strokeLinecap="round" opacity={draw} />
+        {tagT > 0 && <SvgTag cx={xb} ty={Math.min(yl, yb2) - 38} text={label} fill={col} fs={17} maxW={W} />}
       </g>);
     }
     if (feature === 'order_block') {
-      const i = Math.max(1, impI - 1), cd = cands[i];
-      const yt = y(Math.max(cd.o, cd.c)), yb = y(Math.min(cd.o, cd.c));
+      const cd = cands[marks.obIdx];
+      const yt = y(Math.max(cd.o, cd.c)), yb = y(Math.min(cd.o, cd.c)), x0 = x(marks.obIdx) - slot * 0.7;
       return (<g>
-        <rect x={x(i) - slot * 0.7} y={yt} width={Math.max(1, (W - padX - (x(i) - slot * 0.7)) * draw)} height={(yb - yt)} fill="rgba(192,83,31,0.14)" stroke={brand.accent} strokeWidth="2.4" />
-        {tagT > 0 && <SvgTag cx={x(i)} ty={yt - 38} text={c.label && c.label.length < 16 ? c.label.toUpperCase() : 'ORDER BLOCK'} fill={brand.accent} />}
+        <rect x={x0} y={yt} width={Math.max(1, (W - padX - x0) * draw)} height={Math.max(8, yb - yt)} fill="rgba(192,83,31,0.14)" stroke={brand.accent} strokeWidth="2.4" />
+        {tagT > 0 && <SvgTag cx={x(marks.obIdx)} ty={yt - 38} text="Order Block" fill={brand.accent} fs={17} maxW={W} />}
       </g>);
     }
     if (feature === 'fvg') {
-      const i = impI, top = y(cands[i - 1] ? cands[i - 1].hi : cands[i].hi), bot = y(cands[i + 1] ? cands[i + 1].lo : cands[i].lo);
+      // imbalance window between candle 1 and candle 3 around the displacement candle
+      const i = marks.gapIdx, disp = cands[i].up;
+      const a = disp ? y(cands[i - 1].hi) : y(cands[i - 1].lo);
+      const b = disp ? y(cands[i + 1].lo) : y(cands[i + 1].hi);
       return (<g>
-        <rect x={x(i) - slot * 0.6} y={Math.min(top, bot)} width={Math.max(1, slot * 1.6 * draw)} height={Math.abs(bot - top)} fill="rgba(110,134,201,0.20)" stroke={brand.periwinkle} strokeWidth="2.2" strokeDasharray="6 5" />
-        {tagT > 0 && <SvgTag cx={x(i)} ty={Math.min(top, bot) - 36} text="FVG" fill={brand.periwinkle} />}
+        <rect x={x(i) - slot * 0.6} y={Math.min(a, b)} width={Math.max(1, slot * 1.9 * draw)} height={Math.abs(b - a)} fill="rgba(110,134,201,0.20)" stroke={brand.periwinkle} strokeWidth="2.2" strokeDasharray="6 5" />
+        {tagT > 0 && <SvgTag cx={x(i)} ty={Math.min(a, b) - 36} text="Fair Value Gap" fill={brand.periwinkle} fs={17} maxW={W} />}
       </g>);
     }
     if (feature === 'liquidity_sweep') {
-      const yl = y(swingExtP), xs = x(swingExtI);
+      // level with resting liquidity; a wick spikes through it then price closes back & reverses
+      const yl = y(marks.levelP), xs = x(marks.sweepIdx);
       return (<g>
         <line x1={padX} y1={yl} x2={padX + (W - 2 * padX) * draw} y2={yl} stroke={brand.periwinkle} strokeWidth="2.5" strokeDasharray="8 6" />
-        <line x1={xs} y1={yl} x2={xs} y2={yl - 34 * tagT} stroke={brand.bear} strokeWidth="5" strokeLinecap="round" />
-        {tagT > 0 && <SvgTag cx={xs} ty={yl - 78} text="LIQUIDITY SWEPT" fill={brand.bear} />}
+        <line x1={xs} y1={yl} x2={xs} y2={yl + (up ? 1 : -1) * 34 * tagT} stroke={brand.bear} strokeWidth="5" strokeLinecap="round" />
+        {tagT > 0 && <SvgTag cx={xs} ty={up ? yl + 44 : yl - 78} text="Liquidity Sweep" fill={brand.bear} fs={17} maxW={W} />}
       </g>);
     }
     if (feature === 'trade_plan') {
-      const entryP = closes[Math.min(n - 1, impI + 2)];
-      const slP = bearish ? Math.min(0.97, swingExtP + 0.05) : Math.max(0.03, swingExtP - 0.05);
-      const tpP = bearish ? Math.min(...closes) : Math.max(...closes);
+      // E2: reward zone = rr x risk zone (default 1:3). Direction from c.dir ('long'/'short');
+      // fall back to the pattern bias. Geometry is enforced so the green (reward) band is
+      // literally rr times the red (risk) band, and the label reads R:R 1:rr.
+      const rr = Math.max(1, Math.round(c.rr || 3));
+      const isShort = String(c.dir || '').toLowerCase() === 'short' || (c.dir == null && !up);
+      const dir = isShort ? -1 : 1;                 // +1 long (target up), -1 short (target down)
+      const risk = 0.085;                            // risk leg as a fraction of the price axis
+      const entryP = Math.max(0.30, Math.min(0.70, closes[Math.floor(n * 0.6)]));
+      const slP = Math.max(0.04, Math.min(0.96, entryP - dir * risk));
+      const tpP = Math.max(0.04, Math.min(0.96, entryP + dir * rr * risk));
       const row = (p, col, lab) => (<g opacity={draw}><line x1={padX} y1={y(p)} x2={W - padX} y2={y(p)} stroke={col} strokeWidth="3" /><SvgTag cx={W - padX - 56} ty={y(p) - 13} text={lab} fill={col} fs={16} /></g>);
       return (<g>
-        <rect x={padX} y={Math.min(y(entryP), y(slP))} width={(W - 2 * padX)} height={Math.abs(y(entryP) - y(slP)) * draw} fill="rgba(210,56,79,0.12)" />
-        <rect x={padX} y={Math.min(y(entryP), y(tpP))} width={(W - 2 * padX)} height={Math.abs(y(entryP) - y(tpP)) * draw} fill="rgba(31,157,107,0.12)" />
+        <rect x={padX} y={Math.min(y(entryP), y(slP))} width={(W - 2 * padX)} height={Math.abs(y(entryP) - y(slP)) * draw} fill="rgba(210,56,79,0.13)" />
+        <rect x={padX} y={Math.min(y(entryP), y(tpP))} width={(W - 2 * padX)} height={Math.abs(y(entryP) - y(tpP)) * draw} fill="rgba(31,157,107,0.13)" />
         {row(slP, brand.bear, 'STOP')}{row(entryP, brand.primary, 'ENTRY')}{row(tpP, brand.bull, 'TARGET')}
-        {tagT > 0 && <SvgTag cx={padX + 80} ty={y(tpP) + (bearish ? 14 : -42)} text={c.rr ? `R:R 1:${c.rr}` : 'R:R 1:3'} fill={brand.accent} />}
+        {tagT > 0 && <SvgTag cx={padX + 80} ty={y(tpP) + (dir > 0 ? -42 : 32)} text={`R:R 1:${rr}`} fill={brand.accent} />}
       </g>);
     }
     return null;
   };
 
   return (
-    <div style={{ width: '100%', maxWidth: 1280, alignSelf: 'center' }}>
+    <div style={{ width: '100%', maxWidth: 1480, alignSelf: 'center' }}>
       {c.label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 30, letterSpacing: '0.06em', textTransform: 'uppercase', color: brand.slate, marginBottom: 12 }}>{c.label}</div>}
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
         {cands.map((cd, i) => {
@@ -1068,11 +1151,11 @@ function Captions({ captions, fps, brand }) {
             const past = sec >= cap.end;
             const sweep = on ? interpolate(sec, [cap.start, cap.start + Math.min(0.25, Math.max(0.08, cap.end - cap.start))], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }) : (past ? 1 : 0);
             return (
-              <span key={i} style={{ position: 'relative', display: 'inline-block', fontFamily: SANS, fontSize: 46, fontWeight: 800,
-                color: on ? '#FFFFFF' : (past ? '#FFFFFF' : '#FFFFFF'), opacity: past ? 0.55 : 1,
-                textShadow: '0 2px 8px rgba(0,0,0,0.55), 0 0 2px rgba(0,0,0,0.9)' }}>
-                {/* copper highlight sweep behind the active/keyword word */}
-                <span style={{ position: 'absolute', left: -4, right: -4, top: 6, bottom: 6, background: brand.accent, opacity: on || past ? 0.9 : 0, transform: `scaleX(${sweep})`, transformOrigin: 'left center', borderRadius: 4, zIndex: 0 }} />
+              <span key={i} style={{ position: 'relative', display: 'inline-block', fontFamily: SANS, fontSize: 40, fontWeight: 800,
+                color: '#FFFFFF', opacity: past ? 0.82 : 1,
+                textShadow: '0 2px 6px rgba(0,0,0,0.55), 0 0 3px rgba(0,0,0,0.95)' }}>
+                {/* A1: copper highlight ONLY on the word currently being spoken (no lingering box on past words) */}
+                <span style={{ position: 'absolute', left: -4, right: -4, top: 6, bottom: 6, background: brand.accent, opacity: on ? 0.9 : 0, transform: `scaleX(${on ? sweep : 0})`, transformOrigin: 'left center', borderRadius: 4, zIndex: 0 }} />
                 <span style={{ position: 'relative', zIndex: 1 }}>{cap.word}</span>
               </span>
             );
