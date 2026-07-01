@@ -213,10 +213,20 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   // the components fill the normal zone instead of leaving a dead screen.
   const effMode = (mode !== 'graphics' && !showChart) ? 'graphics' : mode;
   const comps = seg.components || [];
-  // CTA full-screen only on actual cta/outro scenes — never lets a stray outro_cta
-  // hijack a chart/practice segment (the "Execute This With Confidence" bug).
-  const outro = comps.find(c => c.type === 'outro_cta');
-  if (outro && (seg.phase === 'outro' || seg.phase === 'cta')) return <OutroCTA c={outro} seg={seg} fps={fps} brand={brand} />;
+  // CTA full-screen: always fires for cta/outro phases. Field-normalize so any Animator
+  // naming convention (headline/title/primary/text) and any button alias works.
+  if (seg.phase === 'outro' || seg.phase === 'cta') {
+    const src = comps.find(c => c.type === 'outro_cta') || comps[0] || {};
+    const ctaData = {
+      headline:    src.headline || src.title || src.primary || src.heading || src.text
+                   || (seg.phase === 'outro' ? 'Master Smart Money Concepts' : 'Get the Complete Smart Money System'),
+      button:      src.button || src.cta || src.action || 'PipsGravity Mastermind',
+      link:        src.link   || src.url || src.subtitle || 'Link in description',
+      bullets:     src.bullets || src.items || [],
+      enter_at_ms: src.enter_at_ms || 120,
+    };
+    return <OutroCTA c={ctaData} seg={seg} fps={fps} brand={brand} />;
+  }
 
   // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
   let flow = comps.filter(c => !['outro_cta', 'annotation', 'brand_bug'].includes(c.type));
@@ -281,8 +291,17 @@ function BackgroundTreatment({ flow, seg, fps, brand }) {
   );
 }
 
-// motion-graphic (non-text) primitive types
-const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'countdown', 'fvg', 'structure_break', 'trade_plan'];
+// motion-graphic (non-text) primitive types — used by the hook guard to suppress
+// candle_cluster injection when a real visual component is already present.
+const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'countdown', 'fvg', 'structure_break', 'trade_plan',
+  'hook_title', 'animated_title', 'title_card', 'chart_thumbnail_flash',
+  'myth_buster', 'myth_vs_reality', 'misconception', 'debunk',
+  'comparison_split', 'retail_vs_smart', 'two_column', 'side_by_side',
+  'process_flow', 'step_sequence', 'workflow', 'four_step', 'sequence_flow',
+  'stat_row', 'stats_grid', 'multiple_stats', 'data_row', 'three_stats',
+  'concept_preview_icons', 'icon_grid', 'feature_icons', 'concept_icons', 'preview_icons',
+  'timer_bar', 'progress_reveal', 'countdown_bar', 'tension_bar',
+  'rr_card', 'risk_reward_card', 'rr_display', 'reward_risk'];
 
 // rough intrinsic heights (px) so the stack can auto-fit without DOM measurement
 function estHeight(c) {
@@ -291,7 +310,24 @@ function estHeight(c) {
   if (c.type === 'flow_steps') { const n = (c.steps || c.items || []).length || 4; return n > 4 ? 470 : 300; }
   const H = { hook_text: 240, heading: 150, concept_card: 250, callback_card: 200, stat_callout: 240,
     chart_concept: 460, candle_cluster: 460, zone_box: 460, liquidity_run: 460, flow_steps: 300, arrow: 120, diagram: 140,
-    crowd: 210, fvg: 460, structure_break: 460, trade_plan: 460 };
+    crowd: 210, fvg: 460, structure_break: 460, trade_plan: 460,
+    // new library
+    hook_title: 220, animated_title: 220, title_card: 220, chart_thumbnail_flash: 220,
+    key_rule: 260, rule_card: 260, pro_tip: 260, key_point: 260, critical_rule: 260,
+    warning_card: 260, caution_card: 260, mistake_card: 260, dont_do: 260, red_flag: 260,
+    key_takeaway: 250, takeaway_card: 250, summary_card: 250, green_card: 250, success_point: 250,
+    myth_buster: 340, myth_vs_reality: 340, misconception: 340, debunk: 340,
+    comparison_split: 280, retail_vs_smart: 280, two_column: 280, side_by_side: 280,
+    checklist: 320, criteria_list: 320, rules_list: 320, entry_checklist: 320, conditions: 320,
+    process_flow: 240, step_sequence: 240, workflow: 240, four_step: 240, sequence_flow: 240,
+    stat_row: 220, stats_grid: 220, multiple_stats: 220, data_row: 220, three_stats: 220,
+    concept_preview_icons: 320, icon_grid: 320, feature_icons: 320, concept_icons: 320, preview_icons: 320,
+    benefit_list: 300, bullet_list: 300, value_bridge_text: 300, feature_list: 300, what_you_get: 300,
+    open_loop_tease: 200, tease_card: 200, forward_hook: 200, next_video_teaser_card: 200, coming_up: 200,
+    rr_card: 340, risk_reward_card: 340, rr_display: 340, reward_risk: 340,
+    social_proof: 320, trust_card: 320, join_card: 320, community_card: 320,
+    timer_bar: 260, progress_reveal: 260, countdown_bar: 260, tension_bar: 260,
+  };
   return H[c.type] || 150;
 }
 // Real measured height for text-heavy cards (best practice — measure, don't guess),
@@ -383,6 +419,76 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'crowd':          return <Crowd {...p} />;
     case 'countdown':      return <Countdown {...p} />;
     case 'diagram':        return <Diagram {...p} />;
+    // ── new component library ────────────────────────────────────────────────
+    case 'hook_title':
+    case 'animated_title':
+    case 'title_card':
+    case 'chart_thumbnail_flash':     return <HookTitle {...p} />;
+    case 'key_rule':
+    case 'rule_card':
+    case 'pro_tip':
+    case 'key_point':
+    case 'critical_rule':             return <KeyRule {...p} />;
+    case 'warning_card':
+    case 'caution_card':
+    case 'mistake_card':
+    case 'dont_do':
+    case 'red_flag':                  return <WarningCard {...p} />;
+    case 'key_takeaway':
+    case 'takeaway_card':
+    case 'summary_card':
+    case 'green_card':
+    case 'success_point':             return <KeyTakeaway {...p} />;
+    case 'myth_buster':
+    case 'myth_vs_reality':
+    case 'misconception':
+    case 'debunk':                    return <MythBuster {...p} />;
+    case 'comparison_split':
+    case 'retail_vs_smart':
+    case 'two_column':
+    case 'side_by_side':              return <ComparisonSplit {...p} />;
+    case 'checklist':
+    case 'criteria_list':
+    case 'rules_list':
+    case 'entry_checklist':
+    case 'conditions':                return <Checklist {...p} />;
+    case 'process_flow':
+    case 'step_sequence':
+    case 'workflow':
+    case 'four_step':
+    case 'sequence_flow':             return <ProcessFlow {...p} />;
+    case 'stat_row':
+    case 'stats_grid':
+    case 'multiple_stats':
+    case 'data_row':
+    case 'three_stats':               return <StatRow {...p} />;
+    case 'concept_preview_icons':
+    case 'icon_grid':
+    case 'feature_icons':
+    case 'concept_icons':
+    case 'preview_icons':             return <IconGrid {...p} />;
+    case 'benefit_list':
+    case 'bullet_list':
+    case 'value_bridge_text':
+    case 'feature_list':
+    case 'what_you_get':              return <BenefitList {...p} />;
+    case 'open_loop_tease':
+    case 'tease_card':
+    case 'forward_hook':
+    case 'next_video_teaser_card':
+    case 'coming_up':                 return <TeaseCallout {...p} />;
+    case 'rr_card':
+    case 'risk_reward_card':
+    case 'rr_display':
+    case 'reward_risk':               return <RiskRewardCard {...p} />;
+    case 'social_proof':
+    case 'trust_card':
+    case 'join_card':
+    case 'community_card':            return <SocialProof {...p} />;
+    case 'timer_bar':
+    case 'progress_reveal':
+    case 'countdown_bar':
+    case 'tension_bar':               return <TimerBar {...p} />;
     default:               return <GenericCard {...p} />;
   }
 }
@@ -879,13 +985,16 @@ function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; le
 // right on the candles, not a generic series with a label slapped on.
 const CONCEPTS = {
   // Break of Structure (continuation): swing high → pullback → decisive close ABOVE it, trend continues
-  bos:             { closes: [0.24, 0.32, 0.44, 0.55, 0.49, 0.42, 0.50, 0.60, 0.69, 0.64, 0.74, 0.82, 0.79, 0.86], swingIdx: 3, breakIdx: 7 },
+  // more candles so the prior swing high, the higher-low pullback, and the break all read clearly
+  bos:             { closes: [0.20, 0.27, 0.35, 0.30, 0.40, 0.49, 0.55, 0.48, 0.41, 0.47, 0.57, 0.66, 0.61, 0.56, 0.64, 0.73, 0.69, 0.79], swingIdx: 6, breakIdx: 10 },
   // Change of Character (reversal): downtrend of lower highs/lows → first break ABOVE the last lower high
-  choch:           { closes: [0.78, 0.68, 0.72, 0.58, 0.63, 0.49, 0.55, 0.43, 0.52, 0.63, 0.60, 0.71, 0.77],       swingIdx: 6, breakIdx: 9 },
+  // more candles so the descending lower-highs/lower-lows sequence is unmistakable before the break
+  choch:           { closes: [0.80, 0.72, 0.76, 0.65, 0.70, 0.57, 0.62, 0.49, 0.55, 0.42, 0.50, 0.61, 0.58, 0.67, 0.64, 0.73, 0.70, 0.78], swingIdx: 8, breakIdx: 11 },
   // Order Block: the last down candle before the impulsive break-up; that candle's body is the zone
   order_block:     { closes: [0.52, 0.46, 0.42, 0.45, 0.40, 0.36, 0.52, 0.66, 0.75, 0.71, 0.68, 0.74, 0.80],       obIdx: 5,    breakIdx: 8 },
   // Liquidity Sweep: price runs BELOW a prior swing low (long wick grabs stops) then closes back & reverses
-  liquidity_sweep: { closes: [0.60, 0.52, 0.44, 0.50, 0.46, 0.53, 0.47, 0.45, 0.58, 0.66, 0.63, 0.71],             levelIdx: 2, sweepIdx: 7 },
+  // more candles so the equal-lows liquidity pool builds before the wick sweeps it and reverses
+  liquidity_sweep: { closes: [0.62, 0.55, 0.47, 0.52, 0.49, 0.55, 0.51, 0.46, 0.49, 0.50, 0.59, 0.66, 0.63, 0.70, 0.68, 0.74], levelIdx: 2, sweepIdx: 9 },
   // Fair Value Gap: 3-candle imbalance around a displacement candle (gap between c1 & c3)
   fvg:             { closes: [0.38, 0.41, 0.39, 0.43, 0.42, 0.45, 0.63, 0.67, 0.64, 0.69, 0.72],                   gapIdx: 6 },
   // Trade Plan: clean accumulation → breakout; entry/stop/target drawn by R:R ratio (E2)
@@ -1036,6 +1145,400 @@ function ChartConcept({ c, seg, fps, brand, idx }) {
   );
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// NEW COMPONENT LIBRARY — 15 components for a rich, always-busy video
+// ════════════════════════════════════════════════════════════════════════════
+
+// 1. HookTitle — dramatic opening title with animated copper underline
+function HookTitle({ c, fps, brand, zoneW }) {
+  const frame = useCurrentFrame();
+  const base = c.enter_at_ms || 80;
+  const fs = fitSize(c.title || c.primary || '', (zoneW || 1500) * 0.96, 900, 120, 160);
+  const lineW = interpolate(frame, [ms2f(base + 400, fps), ms2f(base + 900, fps)], [0, 1],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+  return (
+    <div>
+      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: fs, lineHeight: 1.06, letterSpacing: '-0.03em', color: brand.primary }}>
+        <KineticText text={c.title || c.primary} settleMs={base} fps={fps} kind="rise" perWordMs={75} durMs={440} />
+      </div>
+      <div style={{ marginTop: 14, height: 6, borderRadius: 3, background: brand.accent, width: `${lineW * 100}%`, maxWidth: 400 }} />
+      {(c.subtitle || c.secondary) && (
+        <div style={{ fontFamily: SANS, fontWeight: 500, fontSize: Math.round(fs * 0.40), color: brand.slate, marginTop: 18, lineHeight: 1.3 }}>
+          <KineticText text={c.subtitle || c.secondary} settleMs={base + 500} fps={fps} kind="slideR" perWordMs={50} durMs={320} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 2. KeyRule — navy card for the main moment of a theory segment
+function KeyRule({ c, fps, brand, kind, durMs }) {
+  const frame = useCurrentFrame();
+  const settle = ms2f(c.enter_at_ms || 120, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const body = entrance('rise', frame, ms2f((c.enter_at_ms || 120) + 400, fps), fps, 360);
+  return (
+    <div style={{ ...card, background: brand.primary, borderRadius: 20, padding: '36px 44px', position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 8, background: brand.accent, borderRadius: '20px 0 0 20px' }} />
+      <div style={{ paddingLeft: 22 }}>
+        <div style={{ display: 'inline-block', background: brand.accent, color: '#fff', fontFamily: MONOS, fontSize: 24, fontWeight: 700, padding: '5px 14px', borderRadius: 7, marginBottom: 16, letterSpacing: '0.06em' }}>{c.tag || 'KEY RULE'}</div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 52, color: '#FFFFFF', lineHeight: 1.12 }}>{c.title || c.rule}</div>
+        {c.body && <div style={{ ...body, fontFamily: SANS, fontSize: 36, color: 'rgba(255,255,255,0.82)', marginTop: 14, lineHeight: 1.38 }}>{c.body}</div>}
+      </div>
+    </div>
+  );
+}
+
+// 3. WarningCard — red caution card with breathing glow
+function WarningCard({ c, fps, brand, kind, durMs }) {
+  const frame = useCurrentFrame();
+  const settle = ms2f(c.enter_at_ms || 120, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const body = entrance('rise', frame, ms2f((c.enter_at_ms || 120) + 380, fps), fps, 340);
+  const glow = 0.06 + 0.04 * Math.sin((frame / fps) * 1.4 * Math.PI * 2);
+  return (
+    <div style={{ ...card, background: `rgba(210,56,79,${glow + 0.05})`, border: `2px solid rgba(210,56,79,0.5)`, borderRadius: 20, padding: '34px 42px', position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 8, background: brand.bear, borderRadius: '20px 0 0 20px' }} />
+      <div style={{ paddingLeft: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+          <Icon name="warning" color={brand.bear} size={32} />
+          <div style={{ fontFamily: MONOS, fontSize: 24, fontWeight: 700, color: brand.bear, letterSpacing: '0.08em' }}>{c.tag || 'WARNING'}</div>
+        </div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 50, color: brand.ink, lineHeight: 1.12 }}>{c.title || c.mistake}</div>
+        {c.body && <div style={{ ...body, fontFamily: SANS, fontSize: 36, color: brand.slate, marginTop: 14, lineHeight: 1.38 }}>{c.body}</div>}
+      </div>
+    </div>
+  );
+}
+
+// 4. KeyTakeaway — green confirmation card for end of theory/practice
+function KeyTakeaway({ c, fps, brand, kind, durMs }) {
+  const frame = useCurrentFrame();
+  const settle = ms2f(c.enter_at_ms || 120, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const body = entrance('rise', frame, ms2f((c.enter_at_ms || 120) + 360, fps), fps, 340);
+  return (
+    <div style={{ ...card, background: 'rgba(31,157,107,0.07)', border: '1.5px solid rgba(31,157,107,0.35)', borderRadius: 20, padding: '34px 42px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+        <Icon name="check" color={brand.bull} size={32} />
+        <div style={{ fontFamily: MONOS, fontSize: 24, fontWeight: 700, color: brand.bull, letterSpacing: '0.08em' }}>{c.tag || 'KEY TAKEAWAY'}</div>
+      </div>
+      <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 50, color: brand.primary, lineHeight: 1.12 }}>{c.title || c.takeaway}</div>
+      {c.body && <div style={{ ...body, fontFamily: SANS, fontSize: 36, color: brand.ink, marginTop: 14, lineHeight: 1.38 }}>{c.body}</div>}
+    </div>
+  );
+}
+
+// 5. MythBuster — myth slides in (red + animated strikethrough) then reality reveals (green)
+function MythBuster({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const mythE    = entrance('slideL', frame, base, fps, 420);
+  const realityE = entrance('slideR', frame, base + ms2f(1800, fps), fps, 420);
+  const strikeW  = interpolate(frame, [base + ms2f(600, fps), base + ms2f(1100, fps)], [0, 1],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+      <div style={{ ...mythE, background: 'rgba(210,56,79,0.07)', border: '1.5px solid rgba(210,56,79,0.3)', borderRadius: 16, padding: '26px 34px', position: 'relative' }}>
+        <div style={{ fontFamily: MONOS, fontSize: 22, fontWeight: 700, color: brand.bear, letterSpacing: '0.08em', marginBottom: 10 }}>MYTH</div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 44, color: brand.ink, lineHeight: 1.15, position: 'relative' }}>
+          {c.myth}
+          <div style={{ position: 'absolute', left: 0, top: '50%', height: 4, background: brand.bear, borderRadius: 2, width: `${strikeW * 100}%`, pointerEvents: 'none' }} />
+        </div>
+      </div>
+      <div style={{ ...realityE, background: 'rgba(31,157,107,0.07)', border: '1.5px solid rgba(31,157,107,0.3)', borderRadius: 16, padding: '26px 34px' }}>
+        <div style={{ fontFamily: MONOS, fontSize: 22, fontWeight: 700, color: brand.bull, letterSpacing: '0.08em', marginBottom: 10 }}>REALITY</div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 44, color: brand.primary, lineHeight: 1.15 }}>{c.reality}</div>
+      </div>
+    </div>
+  );
+}
+
+// 6. ComparisonSplit — two-column panel, slides from opposite sides
+function ComparisonSplit({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const leftE  = entrance('slideL', frame, base, fps, 420);
+  const rightE = entrance('slideR', frame, base + ms2f(260, fps), fps, 420);
+  const L = c.left || {}, R = c.right || {};
+  return (
+    <div style={{ display: 'flex', gap: 22, width: '100%' }}>
+      <div style={{ ...leftE, flex: 1, background: 'rgba(210,56,79,0.07)', border: '1.5px solid rgba(210,56,79,0.28)', borderRadius: 18, padding: '28px 32px' }}>
+        <div style={{ fontFamily: MONOS, fontSize: 22, fontWeight: 700, color: brand.bear, letterSpacing: '0.08em', marginBottom: 12 }}>{L.label || 'RETAIL'}</div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 40, color: brand.ink, lineHeight: 1.22 }}>{L.title}</div>
+        {L.body && <div style={{ fontFamily: SANS, fontSize: 32, color: brand.slate, marginTop: 10, lineHeight: 1.35 }}>{L.body}</div>}
+      </div>
+      <div style={{ ...rightE, flex: 1, background: 'rgba(31,157,107,0.07)', border: '1.5px solid rgba(31,157,107,0.28)', borderRadius: 18, padding: '28px 32px' }}>
+        <div style={{ fontFamily: MONOS, fontSize: 22, fontWeight: 700, color: brand.bull, letterSpacing: '0.08em', marginBottom: 12 }}>{R.label || 'SMART MONEY'}</div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 40, color: brand.ink, lineHeight: 1.22 }}>{R.title}</div>
+        {R.body && <div style={{ fontFamily: SANS, fontSize: 32, color: brand.slate, marginTop: 10, lineHeight: 1.35 }}>{R.body}</div>}
+      </div>
+    </div>
+  );
+}
+
+// 7. Checklist — items reveal one by one, each with an animated checkmark
+function Checklist({ c, fps, brand, seg }) {
+  const frame = useCurrentFrame();
+  const items = (c.items || c.criteria || c.rules || []).slice(0, 7).map(it => typeof it === 'string' ? { label: it } : it);
+  const n = items.length || 1;
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const segF = (seg && seg.frameCount) || ms2f(6000, fps);
+  const gap = items.every(it => it.enter_at_ms != null)
+    ? 0
+    : Math.max(ms2f(800, fps), Math.floor((segF - base - ms2f(600, fps)) / Math.max(1, n)));
+  const fs = n >= 6 ? 36 : n >= 5 ? 40 : 44;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: n >= 6 ? 18 : 24 }}>
+      {items.map((it, i) => {
+        const settle = (it.enter_at_ms != null) ? ms2f(it.enter_at_ms, fps) : base + i * gap;
+        const rowE = entrance('slideL', frame, settle, fps, 360);
+        const checkT = interpolate(frame, [settle, settle + ms2f(260, fps)], [0, 1],
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.6)) });
+        return (
+          <div key={i} style={{ ...rowE, display: 'flex', alignItems: 'center', gap: 22 }}>
+            <div style={{ flex: 'none', width: 48, height: 48, borderRadius: '50%',
+              background: `rgba(31,157,107,${0.15 + 0.85 * checkT})`,
+              border: `2px solid rgba(31,157,107,${checkT})`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transform: `scale(${0.6 + 0.4 * checkT})` }}>
+              <svg viewBox="0 0 24 24" style={{ width: 24, height: 24, opacity: checkT }}>
+                <path d="M20 6L9 17l-5-5" fill="none" stroke={brand.bull} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: fs, color: brand.primary, lineHeight: 1.2, flex: 1 }}>{stripEmoji(it.label || it.title || String(it))}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 8. ProcessFlow — horizontal connected steps with animated arrow connectors
+function ProcessFlow({ c, fps, brand, seg }) {
+  const frame = useCurrentFrame();
+  const steps = (c.steps || c.items || []).slice(0, 5).map(s => typeof s === 'string' ? { label: s } : s);
+  const n = Math.max(1, steps.length);
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const segF = (seg && seg.frameCount) || ms2f(8000, fps);
+  const stepGap = Math.max(ms2f(700, fps), Math.floor((segF - base - ms2f(600, fps)) / n));
+  const fallbackIcons = ['choch', 'order_block', 'liquidity', 'sweep', 'entry'];
+  const fs = n >= 5 ? 26 : 30;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0, width: '100%', justifyContent: 'center' }}>
+      {steps.map((s, i) => {
+        const settle = (s.enter_at_ms != null) ? ms2f(s.enter_at_ms, fps) : base + i * stepGap;
+        const cardE = entrance('pop', frame, settle, fps, 380);
+        const arrowT = i < n - 1 ? interpolate(frame, [settle + ms2f(180, fps), settle + ms2f(500, fps)], [0, 1],
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) }) : 0;
+        return (
+          <React.Fragment key={i}>
+            <div style={{ ...cardE, flex: 1, background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 16,
+              padding: '20px 14px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+              boxShadow: '0 8px 20px rgba(11,30,64,0.08)', position: 'relative' }}>
+              <div style={{ position: 'absolute', top: -14, left: '50%', transform: 'translateX(-50%)', width: 30, height: 30,
+                borderRadius: '50%', background: brand.accent, color: '#fff', fontFamily: SANS, fontWeight: 800, fontSize: 16,
+                display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</div>
+              <div style={{ width: 52, height: 52, borderRadius: 12, background: brand.panel, border: `1px solid ${brand.border}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 8 }}>
+                <Icon name={s.icon || fallbackIcons[i % fallbackIcons.length]} color={brand.primary} size={30} />
+              </div>
+              <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: fs, color: brand.primary, textAlign: 'center', lineHeight: 1.2 }}>{stripEmoji(s.label || s.title || '')}</div>
+            </div>
+            {i < n - 1 && (
+              <div style={{ flex: 'none', width: 32, display: 'flex', justifyContent: 'center', opacity: arrowT }}>
+                <svg viewBox="0 0 24 12" style={{ width: 28, height: 14 }}>
+                  <path d="M0 6h18M14 2l6 4-6 4" fill="none" stroke={brand.accent} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// 9. StatRow — 2–4 stats side by side, each with fill bar
+function StatRow({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const stats = (c.stats || c.items || []).slice(0, 4).map(s => typeof s === 'string' ? { value: s } : s);
+  if (!stats.length) return null;
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  return (
+    <div style={{ display: 'flex', gap: 22, width: '100%' }}>
+      {stats.map((s, i) => {
+        const settle = base + ms2f(i * 380, fps);
+        const e = entrance('pop', frame, settle, fps, 400);
+        const barW = interpolate(frame, [settle, settle + ms2f(550, fps)], [0, 100],
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+        return (
+          <div key={i} style={{ ...e, flex: 1, background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 18, padding: '28px 24px', textAlign: 'center', boxShadow: '0 8px 22px rgba(11,30,64,0.07)' }}>
+            <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 80, color: brand.accent, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>{s.value}</div>
+            {s.label && <div style={{ fontFamily: SANS, fontSize: 30, color: brand.slate, marginTop: 8, lineHeight: 1.3 }}>{s.label}</div>}
+            <div style={{ height: 6, borderRadius: 3, background: brand.border, marginTop: 14, overflow: 'hidden' }}>
+              <div style={{ width: `${barW}%`, height: '100%', background: brand.accent }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 10. IconGrid — concept preview tiles that pop in staggered
+function IconGrid({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const items = (c.items || []).slice(0, 6).map(it => typeof it === 'string' ? { label: it } : it);
+  const n = Math.max(1, items.length);
+  const perRow = n <= 3 ? n : Math.ceil(n / 2);
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const fallbackIcons = ['choch', 'order_block', 'liquidity', 'sweep', 'entry', 'check'];
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, justifyContent: 'center' }}>
+      {items.map((it, i) => {
+        const e = entrance('pop', frame, base + ms2f(i * 240, fps), fps, 360);
+        return (
+          <div key={i} style={{ ...e, flex: `1 1 calc(${100 / perRow}% - 18px)`, maxWidth: `calc(${100 / perRow}% - 18px)`,
+            background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 18, padding: '22px 16px',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, boxShadow: '0 8px 22px rgba(11,30,64,0.07)' }}>
+            <div style={{ width: 64, height: 64, borderRadius: 14, background: brand.panel, border: `1px solid ${brand.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name={it.icon || fallbackIcons[i % fallbackIcons.length]} color={brand.primary} size={36} />
+            </div>
+            <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 30, color: brand.primary, textAlign: 'center', lineHeight: 1.2 }}>{stripEmoji(it.label || it.title || '')}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 11. BenefitList — staggered bullet list, default 2.2s per item (keeps CTA/outro alive)
+function BenefitList({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const items = (c.items || c.bullets || c.benefits || []).slice(0, 6).map(it => typeof it === 'string' ? { label: it } : it);
+  if (!items.length) return null;
+  const base = ms2f(c.enter_at_ms || 200, fps);
+  const gapF = ms2f(c.gap_ms || 2200, fps);
+  const fs = items.length >= 5 ? 36 : 42;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {items.map((it, i) => {
+        const settle = (it.enter_at_ms != null) ? ms2f(it.enter_at_ms, fps) : base + i * gapF;
+        const e = entrance('slideL', frame, settle, fps, 400);
+        return (
+          <div key={i} style={{ ...e, display: 'flex', alignItems: 'center', gap: 22 }}>
+            <div style={{ width: 14, height: 14, borderRadius: '50%', background: brand.accent, flex: 'none' }} />
+            <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: fs, color: brand.primary, lineHeight: 1.2 }}>{stripEmoji(it.label || it.title || String(it))}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 12. TeaseCallout — forward-hook / open-loop card with pulsing arrow
+function TeaseCallout({ c, fps, brand, kind, durMs }) {
+  const frame = useCurrentFrame();
+  const settle = ms2f(c.enter_at_ms || 150, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const arrowPulse = 0.45 + 0.55 * Math.abs(Math.sin((frame / fps) * 1.8 * Math.PI));
+  return (
+    <div style={{ ...card, background: brand.panel, border: `2px solid ${brand.accent}`, borderRadius: 18, padding: '28px 38px', display: 'flex', alignItems: 'center', gap: 28 }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontFamily: MONOS, fontSize: 22, fontWeight: 700, color: brand.accent, letterSpacing: '0.07em', marginBottom: 10 }}>{c.tag || 'COMING UP'}</div>
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 48, color: brand.primary, lineHeight: 1.15 }}>{c.title || c.text}</div>
+        {c.body && <div style={{ fontFamily: SANS, fontSize: 34, color: brand.slate, marginTop: 10, lineHeight: 1.35 }}>{c.body}</div>}
+      </div>
+      <div style={{ flex: 'none', opacity: arrowPulse }}>
+        <Icon name="entry" color={brand.accent} size={56} />
+      </div>
+    </div>
+  );
+}
+
+// 13. RiskRewardCard — visual R:R ratio with animating fill bars
+function RiskRewardCard({ c, fps, brand, kind, durMs }) {
+  const frame = useCurrentFrame();
+  const settle = ms2f(c.enter_at_ms || 150, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const rr = Math.max(1, Math.round(c.rr || c.ratio || 3));
+  const riskW = interpolate(frame, [settle + ms2f(200, fps), settle + ms2f(680, fps)], [0, 100],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+  const rewardW = interpolate(frame, [settle + ms2f(500, fps), settle + ms2f(1100, fps)], [0, 100],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+  return (
+    <div style={{ ...card, background: '#fff', border: `1.5px solid ${brand.border}`, borderRadius: 20, padding: '36px 44px', boxShadow: '0 10px 28px rgba(11,30,64,0.08)' }}>
+      <div style={{ fontFamily: MONOS, fontSize: 26, fontWeight: 700, color: brand.slate, letterSpacing: '0.06em', marginBottom: 24 }}>RISK : REWARD</div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: SANS, fontSize: 32, fontWeight: 600, color: brand.ink, marginBottom: 8 }}>
+          <span>Risk</span><span style={{ color: brand.bear }}>1R</span>
+        </div>
+        <div style={{ height: 24, borderRadius: 8, background: brand.border, overflow: 'hidden' }}>
+          <div style={{ width: `${riskW / rr}%`, height: '100%', background: brand.bear }} />
+        </div>
+      </div>
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: SANS, fontSize: 32, fontWeight: 600, color: brand.ink, marginBottom: 8 }}>
+          <span>Reward</span><span style={{ color: brand.bull }}>{rr}R</span>
+        </div>
+        <div style={{ height: 24, borderRadius: 8, background: brand.border, overflow: 'hidden' }}>
+          <div style={{ width: `${rewardW}%`, height: '100%', background: brand.bull }} />
+        </div>
+      </div>
+      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 64, color: brand.accent, textAlign: 'center', marginTop: 24, fontVariantNumeric: 'tabular-nums' }}>1 : {rr}</div>
+    </div>
+  );
+}
+
+// 14. SocialProof — "Join X traders" community card with avatar cluster
+function SocialProof({ c, fps, brand, kind, durMs }) {
+  const frame = useCurrentFrame();
+  const settle = ms2f(c.enter_at_ms || 150, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const pulse = 1 + 0.018 * Math.sin((frame / fps) * 1.1 * Math.PI * 2);
+  const avatarColors = [brand.accent, brand.primary, brand.periwinkle, brand.bull, brand.bear];
+  return (
+    <div style={{ ...card, background: brand.panel, border: `1px solid ${brand.border}`, borderRadius: 20, padding: '36px 44px', textAlign: 'center', boxShadow: '0 10px 28px rgba(11,30,64,0.07)' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
+        {avatarColors.map((col, i) => (
+          <div key={i} style={{ width: 52, height: 52, borderRadius: '50%', background: col, border: '3px solid #fff', marginLeft: i ? -16 : 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="eye" color="#fff" size={26} />
+          </div>
+        ))}
+      </div>
+      <div style={{ fontFamily: SANS, fontWeight: 900, fontSize: 72, color: brand.accent, transform: `scale(${pulse})`, transformOrigin: 'center', fontVariantNumeric: 'tabular-nums' }}>{c.count || '2,400+'}</div>
+      <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 36, color: brand.primary, marginTop: 8 }}>{c.label || 'traders already inside'}</div>
+      {c.sub && <div style={{ fontFamily: SANS, fontSize: 30, color: brand.slate, marginTop: 10 }}>{c.sub}</div>}
+    </div>
+  );
+}
+
+// 15. TimerBar — depleting bar that reveals a message when it empties (builds tension)
+function TimerBar({ c, fps, brand }) {
+  const frame = useCurrentFrame();
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const dur  = ms2f(c.duration_ms || 3000, fps);
+  const fillT = interpolate(frame, [base, base + dur], [1, 0],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.cubic) });
+  const revealT = interpolate(frame, [base + dur, base + dur + ms2f(400, fps)], [0, 1],
+    { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.4)) });
+  const barE = entrance('rise', frame, base, fps, 300);
+  return (
+    <div style={{ ...barE }}>
+      {c.prompt && <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 46, color: brand.primary, marginBottom: 22, lineHeight: 1.2 }}>{c.prompt}</div>}
+      <div style={{ height: 18, borderRadius: 9, background: brand.border, overflow: 'hidden', marginBottom: 24 }}>
+        <div style={{ width: `${fillT * 100}%`, height: '100%', background: `linear-gradient(90deg, ${brand.accent}, ${brand.primary})`, borderRadius: 9 }} />
+      </div>
+      {c.reveal && (
+        <div style={{ opacity: revealT, transform: `scale(${0.8 + 0.2 * revealT})`, transformOrigin: 'center', background: brand.primary, borderRadius: 16, padding: '26px 36px' }}>
+          <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 48, color: '#fff', lineHeight: 1.2, textAlign: 'center' }}>{c.reveal}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Annotation({ c, seg, fps, brand, mode, chartAnchor, chartBox }) {
   const frame = useCurrentFrame();
   const settle = ms2f(c.enter_at_ms || 200, fps);
@@ -1074,6 +1577,19 @@ function OutroCTA({ c, seg, fps, brand }) {
         </div>
         {c.button && <div style={{ ...btn, display: 'inline-block', marginTop: 44, background: brand.accent, color: '#fff', fontFamily: SANS, fontWeight: 700, fontSize: 42, padding: '22px 52px', borderRadius: 16, transform: `${btn.transform || ''} scale(${pulse})`, boxShadow: '0 14px 40px rgba(192,83,31,0.30)' }}>{c.button}</div>}
         {c.link && <div style={{ ...link, fontFamily: SANS, fontSize: 32, color: brand.slate, marginTop: 24 }}>{c.link}</div>}
+        {c.bullets && c.bullets.length > 0 && (
+          <div style={{ marginTop: 36, display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'flex-start', maxWidth: 860, margin: '36px auto 0' }}>
+            {c.bullets.slice(0, 5).map((b, i) => {
+              const bulletE = entrance('slideL', frame, ms2f(baseMs + 1600 + i * 1400, fps), fps, 380);
+              return (
+                <div key={i} style={{ ...bulletE, display: 'flex', alignItems: 'center', gap: 18 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: brand.accent, flex: 'none' }} />
+                  <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 36, color: brand.primary }}>{typeof b === 'string' ? b : (b.label || b.title || '')}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
       <BrandBug brand={brand} />
       {seg.audio_url && <Audio src={seg.audio_url} />}
