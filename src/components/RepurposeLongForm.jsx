@@ -213,23 +213,20 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   // the components fill the normal zone instead of leaving a dead screen.
   const effMode = (mode !== 'graphics' && !showChart) ? 'graphics' : mode;
   const comps = seg.components || [];
-  // CTA full-screen: always fires for cta/outro phases. Field-normalize so any Animator
-  // naming convention (headline/title/primary/text) and any button alias works.
-  if (seg.phase === 'outro' || seg.phase === 'cta') {
-    const src = comps.find(c => c.type === 'outro_cta') || comps[0] || {};
+  // CTA/outro: let the Animator's full composition render through GraphicsStack so all
+  // beats (benefit_list, social_proof, etc.) play normally. Only use the full-screen
+  // OutroCTA takeover as a last resort when the Animator sent zero components.
+  if ((seg.phase === 'outro' || seg.phase === 'cta') && comps.length === 0) {
     const ctaData = {
-      headline:    src.headline || src.title || src.primary || src.heading || src.text
-                   || (seg.phase === 'outro' ? 'Master Smart Money Concepts' : 'Get the Complete Smart Money System'),
-      button:      src.button || src.cta || src.action || 'PipsGravity Mastermind',
-      link:        src.link   || src.url || src.subtitle || 'Link in description',
-      bullets:     src.bullets || src.items || [],
-      enter_at_ms: src.enter_at_ms || 120,
+      headline: seg.phase === 'outro' ? 'Master Smart Money Concepts' : 'Get the Complete Smart Money System',
+      button: 'PipsGravity Mastermind',
+      link: 'Link in description',
     };
     return <OutroCTA c={ctaData} seg={seg} fps={fps} brand={brand} />;
   }
 
   // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
-  let flow = comps.filter(c => !['outro_cta', 'annotation', 'brand_bug'].includes(c.type));
+  let flow = comps.filter(c => !['annotation', 'brand_bug'].includes(c.type));
   // HOOK never renders near-blank: if only text was given, inject one animated graphic.
   if (seg.phase === 'hook' && effMode === 'graphics' && !flow.some(c => GRAPHIC_TYPES.includes(c.type))) {
     flow = [...flow, { type: 'candle_cluster', bias: seg.chart_bias || 'Bearish', _auto: true, enter_at_ms: 200 }];
@@ -238,11 +235,13 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
   const CHART_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'fvg', 'structure_break', 'trade_plan'];
   let seenChart = false;
   flow = flow.filter(c => { if (CHART_TYPES.includes(c.type)) { if (seenChart) return false; seenChart = true; } return true; });
-  // C4: one focal point — keep at most 3 elements, highest importance first (stable order).
-  if (flow.length > 3) {
+  // C4: one focal point per scene window. Hook allows up to 5 components (beats every 1-2s
+  // need more top-level elements); all other phases cap at 3. Sort by importance, stable order.
+  const _maxFlow = seg.phase === 'hook' ? 5 : 3;
+  if (flow.length > _maxFlow) {
     const keep = flow.map((c, i) => i)
       .sort((a, b) => (IMPORTANCE_RANK[flow[a].importance] ?? 1) - (IMPORTANCE_RANK[flow[b].importance] ?? 1) || a - b)
-      .slice(0, 3).sort((a, b) => a - b);
+      .slice(0, _maxFlow).sort((a, b) => a - b);
     flow = keep.map(i => flow[i]);
   }
   const chartBox = chartFinalBox(seg, cam, effMode);
@@ -327,6 +326,7 @@ function estHeight(c) {
     rr_card: 340, risk_reward_card: 340, rr_display: 340, reward_risk: 340,
     social_proof: 320, trust_card: 320, join_card: 320, community_card: 320,
     timer_bar: 260, progress_reveal: 260, countdown_bar: 260, tension_bar: 260,
+    outro_cta: 280, cta_card: 280, cta: 280,
   };
   return H[c.type] || 150;
 }
@@ -489,6 +489,9 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'progress_reveal':
     case 'countdown_bar':
     case 'tension_bar':               return <TimerBar {...p} />;
+    case 'outro_cta':
+    case 'cta_card':
+    case 'cta':                       return <OutroCtaCard {...p} />;
     default:               return <GenericCard {...p} />;
   }
 }
@@ -573,18 +576,19 @@ function CallbackCard({ c, fps, brand, kind, durMs }) {
 const stripEmoji = s => String(s || '').replace(/[\u{1F000}-\u{1FFFF}\u{2190}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2022}]/gu, '').replace(/^\s*[-•☐☑☒]\s*/, '').trim();
 function Roadmap({ c, seg, fps, brand }) {
   const frame = useCurrentFrame();
-  const rows = (c.items || c.rows || []).slice(0, 6).map(r => typeof r === 'string' ? { label: r } : r);
+  const rows = (c.items || c.rows || []).slice(0, 10).map(r => typeof r === 'string' ? { label: r } : r);
   const times = itemFrames(rows.length, seg.frameCount, fps, rows.map(r => r.enter_at_ms));
-  const fs = rows.length >= 6 ? 40 : rows.length >= 5 ? 46 : 52;
+  const fs = rows.length >= 8 ? 34 : rows.length >= 6 ? 40 : rows.length >= 5 ? 46 : 52;
   const fallbackIcons = ['choch', 'order_block', 'liquidity', 'sweep', 'entry', 'check'];
+  const iconSz = rows.length >= 8 ? 56 : 72;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: rows.length >= 5 ? 22 : 28 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: rows.length >= 8 ? 16 : rows.length >= 5 ? 22 : 28 }}>
       {rows.map((r, i) => {
         const e = entrance('slideL', frame, times[i], fps, 360);
         const label = stripEmoji(r.label || r.title);
         return (
           <div key={i} style={{ ...e, display: 'flex', alignItems: 'center', gap: 26 }}>
-            <div style={{ flex: 'none', width: 72, height: 72, borderRadius: 16, background: brand.panel, border: `1px solid ${brand.border}`,
+            <div style={{ flex: 'none', width: iconSz, height: iconSz, borderRadius: 16, background: brand.panel, border: `1px solid ${brand.border}`,
               display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
               <Icon name={r.icon || fallbackIcons[i % fallbackIcons.length]} color={brand.accent} size={40} />
               <div style={{ position: 'absolute', top: -10, left: -10, width: 30, height: 30, borderRadius: '50%', background: brand.primary, color: '#fff',
@@ -1389,9 +1393,9 @@ function StatRow({ c, fps, brand }) {
 // 10. IconGrid — concept preview tiles that pop in staggered
 function IconGrid({ c, fps, brand }) {
   const frame = useCurrentFrame();
-  const items = (c.items || []).slice(0, 6).map(it => typeof it === 'string' ? { label: it } : it);
+  const items = (c.items || []).slice(0, 10).map(it => typeof it === 'string' ? { label: it } : it);
   const n = Math.max(1, items.length);
-  const perRow = n <= 3 ? n : Math.ceil(n / 2);
+  const perRow = n <= 3 ? n : n <= 6 ? Math.ceil(n / 2) : 3;
   const base = ms2f(c.enter_at_ms || 150, fps);
   const fallbackIcons = ['choch', 'order_block', 'liquidity', 'sweep', 'entry', 'check'];
   return (
@@ -1539,18 +1543,29 @@ function TimerBar({ c, fps, brand }) {
   );
 }
 
-function Annotation({ c, seg, fps, brand, mode, chartAnchor, chartBox }) {
+// outro_cta rendered as a featured card inside GraphicsStack (navy bg, button, link)
+function OutroCtaCard({ c, fps, brand, kind, durMs }) {
   const frame = useCurrentFrame();
-  const settle = ms2f(c.enter_at_ms || 200, fps);
-  const s = interpolate(frame, [Math.max(0, settle - ms2f(260, fps)), settle], [0.75, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.6)) });
-  const o = interpolate(frame, [Math.max(0, settle - ms2f(260, fps)), settle], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
-  let boxL = 0, boxT = 0, boxW = CANVAS_W, boxH = CANVAS_H;
-  if (mode !== 'graphics' && chartBox) { boxL = chartBox.left; boxT = chartBox.top; boxW = chartBox.width; boxH = chartBox.height; }
-  else if (mode === 'chart_inset') { const sc = INSET_SCALE_DEFAULT; const c2 = resolveCentre({ anchor: chartAnchor }, sc); boxW = sc*CANVAS_W; boxH = sc*CANVAS_H; boxL = c2.cx - boxW/2; boxT = c2.cy - boxH/2; }
-  const x = boxL + (c.x ?? 0.5) * boxW, y = boxT + (c.y ?? 0.5) * boxH;
+  const settle = ms2f(c.enter_at_ms || 120, fps);
+  const card = entrance(kind, frame, settle, fps, durMs);
+  const btnE = entrance('pop', frame, ms2f((c.enter_at_ms || 120) + 600, fps), fps, 400);
+  const pulse = 1 + 0.02 * Math.sin((frame / fps) * 1.3 * Math.PI * 2);
+  const headline = c.headline || c.title || c.primary || c.text;
   return (
-    <div style={{ position: 'absolute', left: x, top: y, transform: `translate(-50%,-50%) scale(${s})`, opacity: o, pointerEvents: 'none' }}>
-      <div style={{ background: brand.accent, color: '#fff', fontFamily: SANS, fontWeight: 700, fontSize: mode === 'chart_inset' ? 20 : 30, padding: '8px 16px', borderRadius: 10, whiteSpace: 'nowrap', boxShadow: '0 6px 18px rgba(192,83,31,0.35)' }}>{c.label}</div>
+    <div style={{ ...card, background: brand.primary, borderRadius: 20, padding: '40px 48px', textAlign: 'center' }}>
+      {headline && (
+        <div style={{ fontFamily: SANS, fontWeight: 800, fontSize: 56, color: '#fff', lineHeight: 1.1 }}>{headline}</div>
+      )}
+      {c.button && (
+        <div style={{ ...btnE, display: 'inline-block', marginTop: 32, background: brand.accent, color: '#fff',
+          fontFamily: SANS, fontWeight: 700, fontSize: 38, padding: '18px 44px', borderRadius: 14,
+          transform: `${btnE.transform || ''} scale(${pulse})`, boxShadow: '0 14px 40px rgba(192,83,31,0.30)' }}>
+          {c.button}
+        </div>
+      )}
+      {c.link && (
+        <div style={{ fontFamily: SANS, fontSize: 28, color: 'rgba(255,255,255,0.7)', marginTop: 16 }}>{c.link}</div>
+      )}
     </div>
   );
 }
