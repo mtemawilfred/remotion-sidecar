@@ -494,10 +494,13 @@ async function renderVideo(payload) {
   console.log(`[render-video] ${active.video_id} | ${width}x${height}@${fps} | ${durationInFrames} frames | layers ${(active.layers||[]).length} | assets ${Object.keys(active.assets||{}).length}`);
 
   const outPath = path.join(os.tmpdir(), `video_${active.video_id || 'v'}_${Date.now()}.mp4`);
-  const composition = await selectComposition({ serveUrl: bp, id: 'VideoComposer', inputProps: { payload: active } });
+  // v2: route by payload.composition (VideoComposerV2 = agent platform, dynamic dims);
+  // default stays VideoComposer so every legacy payload renders byte-identically.
+  const compId = payload.composition === 'VideoComposerV2' ? 'VideoComposerV2' : 'VideoComposer';
+  const composition = await selectComposition({ serveUrl: bp, id: compId, inputProps: { payload: active } });
 
   await renderMedia({
-    composition: { ...composition, durationInFrames },
+    composition: { ...composition, durationInFrames, width, height, fps },
     serveUrl: bp, 
     codec: 'h264', 
     outputLocation: outPath, 

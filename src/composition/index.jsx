@@ -19,6 +19,7 @@ import { ChartScene }         from '../components/chart/ChartScene';
 import { RepurposeScene }     from '../components/RepurposeScene';
 import { RepurposeLongForm }  from '../components/RepurposeLongForm';
 import { VideoComposer }      from '../components/video/VideoComposer';
+import { VideoComposerV2 }    from '../components/video/VideoComposerV2';
 
 // ── Default props for SceneComposer (Remotion Studio preview only) ─────────
 const DEFAULT_SCENE = {
@@ -318,6 +319,33 @@ export const RemotionRoot = () => {
         fps={30}
         durationInFrames={90}
         defaultProps={{ payload: DEFAULT_VIDEO }}
+      />
+
+      {/* ── Composition 7: VideoComposerV2 ────────────────────────────────
+          v2 AGENT PLATFORM (RedPill v2). Same single-timeline contract as
+          VideoComposer, plus: DYNAMIC dimensions (1920×1080 longform or
+          1080×1920 shortform — read from the payload via calculateMetadata),
+          emphasis styles (quote/strike_correct/underline/annotation), draw-on
+          annotation entrances, zoom-circle leader lines, effects (shake/glitch/
+          speed_lines/fire_aura/punch_in), emoji glyphs. Routed by
+          payload.composition === 'VideoComposerV2' in renderer.renderVideo. */}
+      <Composition
+        id="VideoComposerV2"
+        component={VideoComposerV2}
+        width={1080}
+        height={1920}
+        fps={30}
+        durationInFrames={90}
+        defaultProps={{ payload: DEFAULT_VIDEO }}
+        calculateMetadata={({ props }) => {
+          const p = (props && props.payload) || {};
+          return {
+            width:  p.width  || 1080,
+            height: p.height || 1920,
+            fps:    p.fps    || 30,
+            durationInFrames: Math.max(1, p.total_frames || 90),
+          };
+        }}
       />
     </>
   );
