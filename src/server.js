@@ -160,6 +160,32 @@ app.post('/render-video', async (req, res) => {
   }
 });
 
+// POST /render-video-async → { job_id } immediately, renders VideoComposerV2 in background
+app.post('/render-video-async', (req, res) => {
+  const payload = req.body && (req.body.render_payload || req.body);
+  if (!payload || !Array.isArray(payload.layers)) {
+    return res.status(400).json({ error: 'Missing/invalid render_payload (need layers[])' });
+  }
+  sweepOldRenders();
+  const jobId = `${payload.folder_name || payload.video_id || 'video'}_${Date.now()}`;
+  renderJobs[jobId] = { status: 'running', startedAt: Date.now() };
+  res.status(202).json({ job_id: jobId });
+  console.log(`[async] ${jobId} queued | video-render | ${payload.layers.length} layers`);
+
+  (async () => {
+    try {
+      const mp4 = await renderVideo(payload);
+      const outPath = path.join(RENDERS_DIR, `${jobId}_final.mp4`);
+      fs.writeFileSync(outPath, mp4);
+      renderJobs[jobId] = { status: 'done', file: outPath, bytes: mp4.length };
+      console.log(`[async] ${jobId} done — ${mp4.length} bytes`);
+    } catch (err) {
+      renderJobs[jobId] = { status: 'error', error: err.message };
+      console.error(`[async] ${jobId} failed: ${err.message}`);
+    }
+  })();
+});
+
 app.listen(PORT, () => {
   console.log(`Remotion sidecar running on port ${PORT}`);
 });
