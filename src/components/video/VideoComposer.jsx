@@ -203,34 +203,43 @@ function EmphasisV({ layer, frame, fps, theme }) {
       return String(text).length * REF * 0.62;   // conservative fallback (still never crops)
     }
   };
-  const fitFont = (str) => {
-    const words = String(str || '').split(/\s+/).filter(Boolean);
-    if (!words.length) return 24;
-    const wW = words.map(w => measureW(w));                                 // each word width @REF
-    const longestW = wW.reduce((m, x) => Math.max(m, x), 1);
+  const LINE_H = 1.2;    // fit-math line height (render uses 1.08–1.12; the slack is stroke headroom)
+  const LIST_GAP = 6;    // must match the title-list marginBottom below
+  const PAD_V = 4;       // stroke-safe vertical padding on the clipped region container
+  const fitStackedLines = (texts) => {
+    // ONE uniform font size such that ALL stacked entries — each word-wrapping (greedy,
+    // simulating the REAL wrap for the EXACT row count) — fit the region height TOGETHER,
+    // and no single word exceeds the region width. N=1 is the plain title; N>1 is the
+    // title-list. (The old per-line fitFont sized every list entry to the FULL region
+    // height → N× overflow, clipped at the region edge.)
+    const wWs = texts.map(t => String(t || '').split(/\s+/).filter(Boolean).map(w => measureW(w)));
+    if (!wWs.some(ws => ws.length)) return 24;
+    const availH = Math.max(1, (regionH - 2 * PAD_V) - (texts.length - 1) * LIST_GAP);
+    const longestW = wWs.reduce((m, ws) => ws.reduce((m2, x) => Math.max(m2, x), m), 1);
     const spaceW = Math.max(1, measureW('x x') - measureW('xx'));           // space advance @REF
-    // SIMULATE the real word-wrap (greedy) at a given scale -> EXACT line count, not a ceil() estimate.
-    const countLines = (scale) => {
-      let lines = 1, cur = 0;
-      for (let i = 0; i < wW.length; i++) {
-        const w = wW[i] * scale;
+    const countRows = (ws, scale) => {
+      if (!ws.length) return 0;
+      let rows = 1, cur = 0;
+      for (let i = 0; i < ws.length; i++) {
+        const w = ws[i] * scale;
         if (i === 0) cur = w;
         else if (cur + spaceW * scale + w <= containerW) cur += spaceW * scale + w;
-        else { lines++; cur = w; }
+        else { rows++; cur = w; }
       }
-      return lines;
+      return rows;
     };
-    let fs = Math.min(240, Math.floor(regionH));
+    let fs = Math.min(240, Math.floor(availH / Math.max(1, texts.length)));
     for (let k = 0; k < 400 && fs > 10; k++) {
       const scale = fs / REF;
       const fitsW = longestW * scale <= containerW;                        // longest word fits -> never split mid-word
-      const lines = countLines(scale);                                     // ACTUAL wrapped line count
-      const fitsH = lines * fs * 1.2 <= regionH * 0.96;                    // those lines fit the box height (+margin)
+      const totalRows = wWs.reduce((s, ws) => s + countRows(ws, scale), 0); // ACTUAL wrapped row count, all entries
+      const fitsH = totalRows * fs * LINE_H <= availH * 0.96;              // all rows fit the box height (+margin)
       if (fitsW && fitsH) break;
       fs -= 2;
     }
     return Math.max(10, fs);
   };
+  const fitFont = (str) => fitStackedLines([str]);
 
   const posStyle = {
     position: 'absolute',
@@ -239,7 +248,9 @@ function EmphasisV({ layer, frame, fps, theme }) {
     width: (layer.titleW != null ? (layer.titleW * 100) + '%' : '100%'),
     height: (layer.titleH != null ? (layer.titleH * 100) + '%' : 'auto'),
     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-    textAlign: 'center', padding: '0 14px', boxSizing: 'border-box', overflow: 'hidden',
+    // hard-clip at the region boundary ("every component fits its box"); the vertical
+    // padding keeps the 3px white letter-stroke out of the clip edge.
+    textAlign: 'center', padding: PAD_V + 'px 14px', boxSizing: 'border-box', overflow: 'hidden',
   };
   const textBox = { width: '100%', whiteSpace: 'normal', overflowWrap: 'normal', wordBreak: 'normal', wordSpacing: '4px' };
 
@@ -256,11 +267,13 @@ function EmphasisV({ layer, frame, fps, theme }) {
     return i === 0 ? [span] : [' ', span];
   });
 
-  // TITLE-LIST — stacked lines.
+  // TITLE-LIST — stacked lines, ONE uniform size for the whole list (fitStackedLines
+  // sizes all N entries + their wraps + gaps to the region height together).
   if (Array.isArray(layer.lines) && layer.lines.length > 1) {
     const N = layer.lines.length;
     const dur = Math.max(1, (layer.frameEnd || (layer.frameStart + 120)) - layer.frameStart);
     const step = Math.min(26, Math.max(8, Math.floor(dur / N)));
+    const lfs = fitStackedLines(layer.lines.map(ln => ln.text));
     return (
       <div style={posStyle}>
         {layer.lines.map((ln, i) => {
@@ -269,11 +282,10 @@ function EmphasisV({ layer, frame, fps, theme }) {
           const p = interpolate(lf, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
           const sc = 0.9 + 0.1 * p;
           const lwords = String(ln.text || '').split(/\s+/).filter(Boolean);
-          const lfs = fitFont(ln.text);
           const lkw = (ln.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
           const kwHit = (w) => lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw;
           return (
-            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.1, textTransform: caseTf, letterSpacing: '-0.5px', marginBottom: 6, ...STROKE }}>
+            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.1, textTransform: caseTf, letterSpacing: '-0.5px', marginBottom: LIST_GAP, ...STROKE }}>
               {lwords.flatMap((w, k) => { const sp = <span key={k} style={{ color: kwHit(w) ? kwColor : color }}>{w}</span>; return k === 0 ? [sp] : [' ', sp]; })}
             </div>
           );
