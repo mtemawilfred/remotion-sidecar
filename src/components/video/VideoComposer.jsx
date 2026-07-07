@@ -14,7 +14,7 @@ import { loadFont } from '@remotion/google-fonts/Montserrat';
 // Load Montserrat at the weights the components actually render (600/700/800).
 // loadFont injects the @font-face AND registers a Remotion delayRender, so frames
 // are not snapshotted before the font is ready in headless Chromium.
-const { fontFamily: MONTSERRAT } = loadFont('normal', { weights: ['600', '700', '800'], subsets: ['latin'] });
+const { fontFamily: MONTSERRAT, waitUntilDone: montserratReady } = loadFont('normal', { weights: ['600', '700', '800'], subsets: ['latin'] });
 
 const W = 1080, H = 1920;
 const fontStack = () => `${MONTSERRAT}, 'Helvetica Neue', Arial, sans-serif`;
@@ -198,9 +198,14 @@ function EmphasisV({ layer, frame, fps, theme }) {
   const REF = 100;
   const measureW = (text) => {
     try {
-      return measureText({ text, fontFamily: FONT_FAMILY, fontSize: REF, fontWeight: 800, letterSpacing: '-0.5px' }).width;
+      // validateFontIsLoaded is CRITICAL: layout-utils keeps a module-level word cache
+      // with no font awareness — a measurement taken before Montserrat's @font-face is
+      // applied would cache FALLBACK-font widths (far narrower than Montserrat 800) and
+      // poison every later frame's fit. With validation on, a pre-load call throws
+      // instead of caching; the catch estimate is used for that (never-captured) pass only.
+      return measureText({ text, fontFamily: FONT_FAMILY, fontSize: REF, fontWeight: 800, letterSpacing: '-0.5px', validateFontIsLoaded: true }).width;
     } catch (e) {
-      return String(text).length * REF * 0.62;   // conservative fallback (still never crops)
+      return String(text).length * REF * 0.80;   // Montserrat-800-uppercase realistic (overestimate = shrink, never crop)
     }
   };
   const LINE_H = 1.2;    // fit-math line height (render uses 1.08–1.12; the slack is stroke headroom)
@@ -223,7 +228,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
       for (let i = 0; i < ws.length; i++) {
         const w = ws[i] * scale;
         if (i === 0) cur = w;
-        else if (cur + spaceW * scale + w <= containerW) cur += spaceW * scale + w;
+        else if (cur + spaceW * scale + 4 + w <= containerW) cur += spaceW * scale + 4 + w; // +4 = the render's fixed wordSpacing:'4px'
         else { rows++; cur = w; }
       }
       return rows;
@@ -285,7 +290,7 @@ function EmphasisV({ layer, frame, fps, theme }) {
           const lkw = (ln.keyword || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
           const kwHit = (w) => lkw && w.toUpperCase().replace(/[^A-Z0-9]/g, '') === lkw;
           return (
-            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.1, textTransform: caseTf, letterSpacing: '-0.5px', marginBottom: LIST_GAP, ...STROKE }}>
+            <div key={i} style={{ ...textBox, transform: `scale(${sc})`, opacity: p, fontWeight: 800, fontSize: lfs, lineHeight: 1.1, textTransform: caseTf, letterSpacing: '-0.5px', marginBottom: i === layer.lines.length - 1 ? 0 : LIST_GAP, ...STROKE }}>
               {lwords.flatMap((w, k) => { const sp = <span key={k} style={{ color: kwHit(w) ? kwColor : color }}>{w}</span>; return k === 0 ? [sp] : [' ', sp]; })}
             </div>
           );
@@ -357,6 +362,17 @@ function AudioTracks({ payload, fps }) {
 export const VideoComposer = ({ payload }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  // Belt-and-braces beside validateFontIsLoaded: don't mount text layers until
+  // Montserrat is confirmed loaded, so measureText can never cache fallback-font
+  // widths (guards the <5-unique-chars validation blind spot in layout-utils).
+  const [fontHandle] = useState(() => (typeof window !== 'undefined' ? delayRender('Montserrat for measureText') : null));
+  const [fontsReady, setFontsReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    montserratReady().then(() => { if (alive) setFontsReady(true); if (fontHandle != null) continueRender(fontHandle); })
+      .catch(() => { if (alive) setFontsReady(true); if (fontHandle != null) continueRender(fontHandle); });
+    return () => { alive = false; };
+  }, [fontHandle]);
   const theme = payload.theme || {};
   const assets = payload.assets || {};
   const cam = resolveCamera(payload.camera, frame);
@@ -369,7 +385,7 @@ export const VideoComposer = ({ payload }) => {
         let inner = null;
         if (L.kind === 'background') inner = <BaseLayerV layer={L} theme={theme} frame={frame} />;
         else if (L.kind === 'visual' || L.kind === 'icon' || L.kind === 'character') inner = <ImageLayerV layer={L} frame={frame} fps={fps} assets={assets} theme={theme} />;
-        else if (L.kind === 'emphasis') inner = <EmphasisV layer={L} frame={frame} fps={fps} theme={theme} />;
+        else if (L.kind === 'emphasis') inner = fontsReady ? <EmphasisV layer={L} frame={frame} fps={fps} theme={theme} /> : null;
         else if (L.kind === 'caption') inner = <CaptionV layer={L} frame={frame} theme={theme} />;
         if (!inner) return null;
         const style = L.camera_locked ? { transform: `scale(${cam.scale}) translateX(${cam.x}px)`, transformOrigin: 'center center' } : undefined;
