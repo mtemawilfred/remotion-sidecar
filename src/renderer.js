@@ -208,8 +208,26 @@ async function setupRepurposeFiles(sceneJson) {
       return out;
     });
 
-    const { source_video_b64, cta_banner_b64, bg_music_b64, bg_music_name, ...rest } = sceneJson;
-    transformed = { ...rest, source_video_url, cta_banner_url, bg_music_url, timeline };
+    // ── V2: meme/reaction asset map {name → {b64, media_type}} → served URLs ─
+    // Keys stay the ORIGINAL asset names so the composition's
+    // sceneJson.assets[component.asset] lookup matches. A bad entry is skipped,
+    // never fatal (MemeCutaway renders nothing for a missing name).
+    let assetsUrls = null;
+    if (sceneJson.assets && typeof sceneJson.assets === 'object') {
+      assetsUrls = {};
+      let ai = 0;
+      for (const [name, a] of Object.entries(sceneJson.assets)) {
+        if (!a || !a.b64) continue;
+        try {
+          const ext = (String(name).split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+          assetsUrls[name] = { url: writeB64(a.b64, `retention_asset_${ai++}.${ext}`), media_type: a.media_type || 'image/png' };
+        } catch (e) { console.warn(`[renderer] retention asset decode failed (${name}): ${e.message}`); }
+      }
+      console.log(`[renderer] retention assets served: ${Object.keys(assetsUrls).length}`);
+    }
+
+    const { source_video_b64, cta_banner_b64, bg_music_b64, bg_music_name, assets, ...rest } = sceneJson;
+    transformed = { ...rest, source_video_url, cta_banner_url, bg_music_url, assets: assetsUrls, timeline };
   }
   // ── OLD shape: sequence[] (REPURPOSE_SCENE) — unchanged behaviour ─────────
   else {

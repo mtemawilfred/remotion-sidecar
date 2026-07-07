@@ -164,6 +164,7 @@ export const RepurposeLongForm = ({ sceneJson }) => {
   const isLegacy = !sceneJson.timeline && Array.isArray(sceneJson.sequence);
   const rawSegs = sceneJson.timeline || sceneJson.sequence || [];
   const srcUrl = sceneJson.source_video_url, bgmUrl = sceneJson.bg_music_url;
+  const assets = sceneJson.assets || null;   // V2: meme/reaction media {name → {url, media_type}}
   const camMap = {}; (sceneJson.camera || []).forEach(c => { camMap[c.segment_id] = c; });
   let offset = 0;
   const segs = rawSegs.map((s, i) => {
@@ -176,7 +177,7 @@ export const RepurposeLongForm = ({ sceneJson }) => {
       <World brand={brand} />
       {segs.map(seg => (
         <Sequence key={seg._i} from={seg.frameStart} durationInFrames={seg.frameCount}>
-          <SegmentView seg={seg} srcUrl={srcUrl} fps={fps} brand={brand} cam={camMap[seg.segment_id]} isLegacy={isLegacy} />
+          <SegmentView seg={seg} srcUrl={srcUrl} fps={fps} brand={brand} cam={camMap[seg.segment_id]} isLegacy={isLegacy} assets={assets} />
         </Sequence>
       ))}
       {bgmUrl && <Audio src={bgmUrl} volume={BGM_VOLUME} loop />}
@@ -202,7 +203,7 @@ function World({ brand }) {
   );
 }
 
-function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
+function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
   const frame = useCurrentFrame();
   if (isLegacy) return <LegacySegment seg={seg} srcUrl={srcUrl} fps={fps} brand={brand} />;
 
@@ -225,8 +226,11 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
     return <OutroCTA c={ctaData} seg={seg} fps={fps} brand={brand} />;
   }
 
+  // V2: meme/reaction cutaways render as a short-lived inset OVERLAY, not flow-column
+  // items — pull them out so they never consume a focal-point slot.
+  const memes = comps.filter(c => c && MEME_TYPES.includes(c.type) && c.asset);
   // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
-  let flow = comps.filter(c => !['annotation', 'brand_bug'].includes(c.type));
+  let flow = comps.filter(c => !['annotation', 'brand_bug', ...MEME_TYPES].includes(c.type));
   // HOOK never renders near-blank: if only text was given, inject one animated graphic.
   if (seg.phase === 'hook' && effMode === 'graphics' && !flow.some(c => GRAPHIC_TYPES.includes(c.type))) {
     flow = [...flow, { type: 'candle_cluster', bias: seg.chart_bias || 'Bearish', _auto: true, enter_at_ms: 200 }];
@@ -257,6 +261,7 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy }) {
       {effMode === 'graphics' && <BackgroundTreatment flow={flow} seg={seg} fps={fps} brand={brand} />}
       {showChart && <ChartLayer seg={seg} srcUrl={srcUrl} fps={fps} cam={cam} mode={mode} />}
       {gZone && flow.length > 0 && <GraphicsStack flow={flow} seg={seg} fps={fps} brand={brand} zone={gZone} settleF={settleF} />}
+      {memes.map((c, i) => <MemeCutaway key={`meme${i}`} c={c} fps={fps} assets={assets} />)}
       <BrandBug brand={brand} />
       {seg.captions && seg.captions.length > 0 && <Captions captions={seg.captions} fps={fps} brand={brand} />}
       {seg.audio_url && <Audio src={seg.audio_url} />}
@@ -289,6 +294,10 @@ function BackgroundTreatment({ flow, seg, fps, brand }) {
     </AbsoluteFill>
   );
 }
+
+// V2: meme/reaction cutaway type + aliases — VRE-assigned media insets, rendered as
+// a short overlay by MemeCutaway (never part of the flow column).
+const MEME_TYPES = ['meme_cutaway', 'meme', 'reaction_clip', 'asset_flash'];
 
 // motion-graphic (non-text) primitive types — used by the hook guard to suppress
 // candle_cluster injection when a real visual component is already present.
@@ -492,6 +501,12 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'outro_cta':
     case 'cta_card':
     case 'cta':                       return <OutroCtaCard {...p} />;
+    // V2: meme cutaways are extracted before the flow reaches here (overlay layer);
+    // if one slips through, render nothing — never a GenericCard placeholder.
+    case 'meme_cutaway':
+    case 'meme':
+    case 'reaction_clip':
+    case 'asset_flash':               return null;
     default:               return <GenericCard {...p} />;
   }
 }
@@ -513,6 +528,56 @@ function EffectWrap({ effect, settleMs, fps, children }) {
   }
   const g = interpolate(frame, [s, s + ms2f(200, fps), s + ms2f(900, fps)], [0, 1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });   // highlight glow flash
   return <div style={{ filter: `drop-shadow(0 0 ${18 * g}px rgba(192,83,31,${0.55 * g}))` }}>{children}</div>;
+}
+
+// V2: MemeCutaway — a VRE-assigned meme/reaction media inset (pattern interrupt).
+// Pops in at enter_at_ms, holds ~1-2s, auto-exits. Image via Img, video via Video.
+// Unknown/missing asset name → renders NOTHING (never a blank hijack of the scene).
+// V2.1: kind:'broll' renders as a large centered cinematic inset; anything else
+// (meme/drive/unset) keeps the original small bottom-right corner inset.
+function MemeCutaway({ c, fps, assets }) {
+  const a = (assets || {})[c.asset];
+  if (!a || !a.url) return null;
+  const holdMs = Math.min(Math.max(c.duration_ms || 1600, 800), 2500);
+  const enterF = ms2f(c.enter_at_ms || 0, fps);
+  const totalF = ms2f(holdMs + 240, fps);   // hold + pop-out tail
+  return (
+    <Sequence from={enterF} durationInFrames={totalF} layout="none">
+      <MemeCutawayInner a={a} holdMs={holdMs} fps={fps} kind={c.kind} />
+    </Sequence>
+  );
+}
+
+function MemeCutawayInner({ a, holdMs, fps, kind }) {
+  const frame = useCurrentFrame();   // local to the cutaway Sequence
+  const inEnd = ms2f(220, fps);
+  const outStart = ms2f(holdMs, fps);
+  const k = interpolate(frame, [0, inEnd], [0.6, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.34, 1.56, 0.64, 1) });
+  const out = interpolate(frame, [outStart, outStart + ms2f(240, fps)], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.in(Easing.cubic) });
+  const isVideo = String(a.media_type || '').startsWith('video');
+  const media = isVideo
+    ? <Video src={a.url} muted objectFit="cover" style={{ width: '100%', height: '100%' }} />
+    : <Img src={a.url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />;
+  if (kind === 'broll') {
+    return (
+      <div style={{ position: 'absolute', left: '50%', top: '50%', width: 960, height: 540, zIndex: 40,
+        transform: `translate(-50%, -50%) scale(${k * out})`, transformOrigin: 'center', opacity: out,
+        borderRadius: 22, overflow: 'hidden', border: '6px solid #FFFFFF',
+        boxShadow: '0 26px 90px rgba(20,49,95,0.45)', background: '#0E1622' }}>
+        {media}
+        <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 120px rgba(0,0,0,0.45)', pointerEvents: 'none' }} />
+      </div>
+    );
+  }
+  const rot = interpolate(frame, [0, inEnd], [-6, -2], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  return (
+    <div style={{ position: 'absolute', right: 120, bottom: 170, width: 460, height: 340, zIndex: 40,
+      transform: `scale(${k * out}) rotate(${rot}deg)`, transformOrigin: 'bottom right', opacity: out,
+      borderRadius: 18, overflow: 'hidden', border: '6px solid #FFFFFF',
+      boxShadow: '0 18px 60px rgba(20,49,95,0.35)', background: '#0E1622' }}>
+      {media}
+    </div>
+  );
 }
 
 // J4: countdown primitive — a 3-2-1 tick that builds tension before a reveal.
