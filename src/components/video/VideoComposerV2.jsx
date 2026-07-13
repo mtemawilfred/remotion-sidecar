@@ -15,7 +15,7 @@
 //   • effects[]: shake (camera noise), glitch (slice bars), speed_lines,
 //     fire_aura (glow behind the character), punch_in (camera step) — all
 //     frame-windowed, all deterministic.
-//   • emoji glyphs (fire/plate/burger/question) beside the SVG builtins.
+//   • builtin glyphs rendered as real emoji artwork (public/emoji/<name>.png).
 // The legacy VideoComposer/VideoComposer payloads are untouched — this is a
 // separate composition, routed by payload.composition === 'VideoComposerV2'.
 import React, { useState, useEffect } from 'react';
@@ -27,48 +27,14 @@ import { loadFont } from '@remotion/google-fonts/Montserrat';
 const { fontFamily: MONTSERRAT, waitUntilDone: montserratReady } = loadFont('normal', { weights: ['600', '700', '800'], subsets: ['latin'] });
 const fontStack = () => `${MONTSERRAT}, 'Helvetica Neue', Arial, sans-serif`;
 
-// ── built-in glyphs: SVG set + v2 emoji set ─────────────────────────────────
-const EMOJI_GLYPHS = { fire: '🔥', plate: '🍽️', burger: '🍔', question: '❓' };
+// ── built-in glyphs: real emoji artwork (public/emoji/<name>.png, Noto 128px) ─
+// Headless Chrome has no color-emoji font, so text emoji would tofu — the PNGs
+// ARE the artwork. Drawn inside the same white-circle + red-border badge.
 function Glyph({ name, size, color }) {
   const s = size || 96, c = color || '#9B1B1B', sw = Math.max(4, s * 0.07);
-  if (EMOJI_GLYPHS[name]) {
-    return (
-      <div style={{ width: s, height: s, borderRadius: '50%', background: 'rgba(255,255,255,0.92)', border: `${sw}px solid ${c}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <span style={{ fontSize: s * 0.52, lineHeight: 1 }}>{EMOJI_GLYPHS[name]}</span>
-      </div>
-    );
-  }
-  const P = { fill: 'none', stroke: c, strokeWidth: sw, strokeLinecap: 'round', strokeLinejoin: 'round' };
-  const paths = {
-    arrow_down:  <g {...P}><line x1="50" y1="20" x2="50" y2="78"/><polyline points="30,58 50,80 70,58"/></g>,
-    arrow_up:    <g {...P}><line x1="50" y1="80" x2="50" y2="22"/><polyline points="30,42 50,20 70,42"/></g>,
-    money:       <g {...P}><line x1="50" y1="18" x2="50" y2="82"/><path d="M64 32 C64 24 56 22 50 22 C44 22 36 26 36 36 C36 46 50 48 50 48 C50 48 66 50 66 62 C66 72 56 78 50 78 C42 78 36 74 36 66"/></g>,
-    lock:        <g {...P}><rect x="28" y="46" width="44" height="36" rx="6"/><path d="M38 46 V36 a12 12 0 0 1 24 0 V46"/></g>,
-    warning:     <g {...P}><path d="M50 22 L80 76 H20 Z"/><line x1="50" y1="44" x2="50" y2="60"/><circle cx="50" cy="68" r="1.5" fill={c}/></g>,
-    check:       <g {...P}><polyline points="26,52 44,70 76,32"/></g>,
-    cross:       <g {...P}><line x1="32" y1="32" x2="68" y2="68"/><line x1="68" y1="32" x2="32" y2="68"/></g>,
-    heart:       <g {...P}><path d="M50 78 C20 56 26 30 44 30 C50 30 50 36 50 36 C50 36 50 30 56 30 C74 30 80 56 50 78 Z"/></g>,
-    chain:       <g {...P}><rect x="24" y="40" width="28" height="20" rx="10"/><rect x="48" y="40" width="28" height="20" rx="10"/></g>,
-    broken_chain:<g {...P}><rect x="22" y="40" width="22" height="20" rx="10"/><rect x="56" y="40" width="22" height="20" rx="10"/><line x1="46" y1="42" x2="54" y2="58"/></g>,
-    brain:       <g {...P}><path d="M40 30 C30 30 26 40 30 46 C24 50 26 62 34 64 C34 74 48 76 50 68 V32 C48 26 44 30 40 30 Z"/><path d="M60 30 C70 30 74 40 70 46 C76 50 74 62 66 64 C66 74 52 76 50 68"/></g>,
-    clock:       <g {...P}><circle cx="50" cy="50" r="30"/><polyline points="50,32 50,50 64,58"/></g>,
-    mirror:      <g {...P}><ellipse cx="50" cy="46" rx="20" ry="28"/><line x1="50" y1="74" x2="50" y2="84"/><line x1="38" y1="84" x2="62" y2="84"/></g>,
-    book:        <g {...P}><path d="M50 30 C40 24 28 24 22 28 V74 C28 70 40 70 50 76 C60 70 72 70 78 74 V28 C72 24 60 24 50 30 Z"/><line x1="50" y1="30" x2="50" y2="76"/></g>,
-    briefcase:   <g {...P}><rect x="22" y="42" width="56" height="34" rx="4"/><path d="M40 42 V32 a6 6 0 0 1 6 -6 h8 a6 6 0 0 1 6 6 V42"/><line x1="22" y1="58" x2="78" y2="58"/></g>,
-    phone:       <g {...P}><rect x="34" y="18" width="32" height="64" rx="8"/><line x1="46" y1="72" x2="54" y2="72"/></g>,
-    key:         <g {...P}><circle cx="32" cy="32" r="14"/><line x1="43" y1="43" x2="80" y2="80"/><line x1="66" y1="66" x2="74" y2="58"/><line x1="74" y1="74" x2="82" y2="66"/></g>,
-    scale:       <g {...P}><line x1="50" y1="18" x2="50" y2="82"/><line x1="26" y1="30" x2="74" y2="30"/><path d="M26 30 L16 54 A14 10 0 0 0 36 54 Z"/><path d="M74 30 L64 54 A14 10 0 0 0 84 54 Z"/><line x1="38" y1="82" x2="62" y2="82"/></g>,
-    graph_up:    <g {...P}><polyline points="22,72 40,52 56,62 82,26"/><polyline points="66,26 82,26 82,42"/><line x1="22" y1="82" x2="82" y2="82"/></g>,
-    graph_down:  <g {...P}><polyline points="22,28 40,48 56,38 82,74"/><polyline points="66,74 82,74 82,58"/><line x1="22" y1="82" x2="82" y2="82"/></g>,
-    gear:        <g {...P}><circle cx="50" cy="50" r="18"/><circle cx="50" cy="50" r="6" fill={c}/><line x1="68" y1="50" x2="76" y2="50"/><line x1="62.7" y1="62.7" x2="68.6" y2="68.6"/><line x1="50" y1="68" x2="50" y2="76"/><line x1="37.3" y1="62.7" x2="31.4" y2="68.6"/><line x1="32" y1="50" x2="24" y2="50"/><line x1="37.3" y1="37.3" x2="31.4" y2="31.4"/><line x1="50" y1="32" x2="50" y2="24"/><line x1="62.7" y1="37.3" x2="68.6" y2="31.4"/></g>,
-    target:      <g {...P}><circle cx="50" cy="50" r="28"/><circle cx="50" cy="50" r="16"/><circle cx="50" cy="50" r="4" fill={c}/></g>,
-    calendar:    <g {...P}><rect x="20" y="26" width="60" height="54" rx="6"/><line x1="20" y1="42" x2="80" y2="42"/><line x1="34" y1="18" x2="34" y2="30"/><line x1="66" y1="18" x2="66" y2="30"/></g>,
-    star:        <g {...P}><path d="M50 20 L58 42 L82 42 L62 56 L70 78 L50 64 L30 78 L38 56 L18 42 L42 42 Z"/></g>,
-    shield:      <g {...P}><path d="M50 18 L78 30 V54 C78 70 66 80 50 86 C34 80 22 70 22 54 V30 Z"/></g>,
-  };
   return (
     <div style={{ width: s, height: s, borderRadius: '50%', background: 'rgba(255,255,255,0.92)', border: `${sw}px solid ${c}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <svg viewBox="0 0 100 100" width={s * 0.62} height={s * 0.62}>{paths[name] || <circle cx="50" cy="50" r="8" fill={c} />}</svg>
+      <Img src={staticFile('emoji/' + name + '.png')} style={{ width: s * 0.62, height: s * 0.62, objectFit: 'contain', display: 'block' }} />
     </div>
   );
 }
