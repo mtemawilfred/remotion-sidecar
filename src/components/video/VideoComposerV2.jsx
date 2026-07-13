@@ -15,7 +15,8 @@
 //   • effects[]: shake (camera noise), glitch (slice bars), speed_lines,
 //     fire_aura (glow behind the character), punch_in (camera step) — all
 //     frame-windowed, all deterministic.
-//   • builtin glyphs rendered as real emoji artwork (public/emoji/<name>.png).
+//   • no icon/glyph asset tier — every non-character element is a generated
+//     visual; a failed/empty generation draws a neutral placeholder instead.
 // The legacy VideoComposer/VideoComposer payloads are untouched — this is a
 // separate composition, routed by payload.composition === 'VideoComposerV2'.
 import React, { useState, useEffect } from 'react';
@@ -27,18 +28,11 @@ import { loadFont } from '@remotion/google-fonts/Montserrat';
 const { fontFamily: MONTSERRAT, waitUntilDone: montserratReady } = loadFont('normal', { weights: ['600', '700', '800'], subsets: ['latin'] });
 const fontStack = () => `${MONTSERRAT}, 'Helvetica Neue', Arial, sans-serif`;
 
-// ── built-in glyphs: real emoji artwork (public/emoji/<name>.png, Noto 128px) ─
-// Headless Chrome has no color-emoji font, so text emoji would tofu — the PNGs
-// ARE the artwork. Drawn inside the same white-circle + red-border badge.
-function Glyph({ name, size, color }) {
-  const s = size || 96, c = color || '#9B1B1B', sw = Math.max(4, s * 0.07);
-  return (
-    <div style={{ width: s, height: s, borderRadius: '50%', background: 'rgba(255,255,255,0.92)', border: `${sw}px solid ${c}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Img src={staticFile('emoji/' + name + '.png')} style={{ width: s * 0.62, height: s * 0.62, objectFit: 'contain', display: 'block' }} />
-    </div>
-  );
+// ── failed/empty asset placeholder: a subtle neutral box, never a hard blank ─
+function AssetPlaceholder({ size, theme }) {
+  const s = size || 96;
+  return <div style={{ width: s, height: s, borderRadius: Math.round(s * 0.12), background: (theme && theme.primary) || '#1A1A1A', opacity: 0.18 }} />;
 }
-const ALL_GLYPHS = ['arrow_down','arrow_up','money','lock','warning','check','cross','heart','chain','broken_chain','brain','clock','mirror','fire','plate','burger','question','book','briefcase','phone','key','scale','graph_up','graph_down','gear','target','calendar','star','shield'];
 
 function BaseLayerV({ layer, theme }) {
   const bg = layer.background || { type: 'flat' };
@@ -144,8 +138,7 @@ function ImageLayerV2({ layer, frame, fps, assets, theme, W, H }) {
   const isZoomCircle = layer.treatment === 'zoom_circle';
 
   let content = null;
-  if (a && a.type === 'builtin') content = <Glyph name={a.name} size={(boxW || height || 96)} color={theme.accent} />;
-  else if (a && (a.localUrl || a.url)) {
+  if (a && (a.localUrl || a.url)) {
     if (isChar) {
       const charMaxW = Math.min(W * 0.96, (lo.scale ? lo.scale * W * 1.6 : W * 0.96));
       const imgStyle = { height, width: 'auto', maxWidth: charMaxW, objectFit: 'contain', display: 'block' };
@@ -183,8 +176,8 @@ function ImageLayerV2({ layer, frame, fps, assets, theme, W, H }) {
       );
     }
   }
-  if (!content && layer.asset_ref && ALL_GLYPHS.indexOf(layer.asset_ref) !== -1) {
-    content = <Glyph name={layer.asset_ref} size={(boxW || height || 140)} color={theme.accent} />;
+  if (!content && layer.asset_ref) {
+    content = <AssetPlaceholder size={(boxW || height || 140)} theme={theme} />;
   }
   if (!content) return null;
 
