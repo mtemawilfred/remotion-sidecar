@@ -140,7 +140,7 @@ function ImageLayerV2({ layer, frame, fps, assets, theme, W, H }) {
   let content = null;
   if (a && (a.localUrl || a.url)) {
     if (isChar) {
-      const charMaxW = Math.min(W * 0.96, (lo.scale ? lo.scale * W * 1.6 : W * 0.96));
+      const charMaxW = Math.min(W * 0.96, lo.boxW || (lo.scale ? lo.scale * W * 1.6 : W * 0.96));
       const imgStyle = { height, width: 'auto', maxWidth: charMaxW, objectFit: 'contain', display: 'block' };
       if (ent.clip) { imgStyle.clipPath = ent.clip; imgStyle.WebkitClipPath = ent.clip; }
       content = <Img src={a.localUrl || a.url} style={imgStyle} />;
