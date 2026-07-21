@@ -444,7 +444,7 @@ function AudioTracks({ payload, fps }) {
   return (
     <>
       {au.voiceover && (au.voiceover.localUrl || au.voiceover.url) ? <Audio src={au.voiceover.localUrl || au.voiceover.url} volume={au.voiceover.gain != null ? au.voiceover.gain : 1} /> : null}
-      {au.bgm && (au.bgm.localUrl || au.bgm.url) ? <Audio src={au.bgm.localUrl || au.bgm.url} volume={au.bgm.gain != null ? au.bgm.gain : 0.15} loop /> : null}
+      {payload._bgm_enabled !== false && au.bgm && (au.bgm.localUrl || au.bgm.url) ? <Audio src={au.bgm.localUrl || au.bgm.url} volume={au.bgm.gain != null ? au.bgm.gain : 0.15} loop /> : null}
       {(au.sfx || []).map((s, i) => {
         const file = s.file && (s.file.endsWith('.mp3') ? s.file : s.file + '.mp3');
         const src = s.localUrl || (file ? staticFile('assets/sfx/' + file) : null);
