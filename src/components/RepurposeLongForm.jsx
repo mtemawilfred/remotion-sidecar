@@ -1064,6 +1064,8 @@ const CONCEPTS = {
   // Liquidity Sweep: price runs BELOW a prior swing low (long wick grabs stops) then closes back & reverses
   // more candles so the equal-lows liquidity pool builds before the wick sweeps it and reverses
   liquidity_sweep: { closes: [0.62, 0.55, 0.47, 0.52, 0.49, 0.55, 0.51, 0.46, 0.49, 0.50, 0.59, 0.66, 0.63, 0.70, 0.68, 0.74], levelIdx: 2, sweepIdx: 9 },
+  // Source-normalized from ChartTactix SRC-2026-0214 / -0237 / -0325: minor high -> wick sweep -> real lower target.
+  inducement:      { closes: [0.72, 0.80, 0.87, 0.66, 0.50, 0.44, 0.55, 0.62, 0.70, 0.67, 0.76, 0.65, 0.48, 0.40], inducementIdx: 2, sweepIdx: 10, targetIdx: 5, targetHitIdx: 13 },
   // Fair Value Gap: 3-candle imbalance around a displacement candle (gap between c1 & c3)
   fvg:             { closes: [0.38, 0.41, 0.39, 0.43, 0.42, 0.45, 0.63, 0.67, 0.64, 0.69, 0.72],                   gapIdx: 6 },
   // Trade Plan: clean accumulation → breakout; entry/stop/target drawn by R:R ratio (E2)
@@ -1087,6 +1089,12 @@ function buildConcept(feature, up, seed) {
     if (up) cands[s].lo = Math.max(0.02, lvl - 0.10); else cands[s].hi = Math.min(0.98, lvl + 0.10);
     marks.levelP = lvl;
   }
+  if (feature === 'inducement') {
+    const level = closes[spec.inducementIdx], target = closes[spec.targetIdx];
+    cands[spec.sweepIdx].hi = Math.min(0.98, level + 0.10);
+    cands[spec.targetHitIdx].lo = Math.max(0.02, target - 0.04);
+    marks.inducementP = level; marks.targetP = target;
+  }
   if (feature === 'fvg') {
     const i = spec.gapIdx;
     if (cands[i].up) { cands[i - 1].hi = Math.max(cands[i - 1].o, cands[i - 1].c) + 0.005; cands[i + 1].lo = Math.min(cands[i + 1].o, cands[i + 1].c) - 0.005; }
@@ -1100,6 +1108,7 @@ function featOf(c) {
     case 'structure_break': return String(c.kind || 'bos').toLowerCase().includes('choch') ? 'choch' : 'bos';
     case 'zone_box': return 'order_block';
     case 'liquidity_run': return 'liquidity_sweep';
+    case 'inducement': return 'inducement';
     case 'fvg': return 'fvg';
     case 'trade_plan': return 'trade_plan';
     default: return 'candles';
@@ -1168,6 +1177,16 @@ function ChartConcept({ c, seg, fps, brand, idx }) {
         <line x1={padX} y1={yl} x2={padX + (W - 2 * padX) * draw} y2={yl} stroke={brand.periwinkle} strokeWidth="2.5" strokeDasharray="8 6" />
         <line x1={xs} y1={yl} x2={xs} y2={yl + (up ? 1 : -1) * 34 * tagT} stroke={brand.bear} strokeWidth="5" strokeLinecap="round" />
         {tagT > 0 && <SvgTag cx={xs} ty={up ? yl + 44 : yl - 78} text="Liquidity Sweep" fill={brand.bear} fs={17} maxW={W} />}
+      </g>);
+    }
+    if (feature === 'inducement') {
+      const xi = x(marks.inducementIdx), xs = x(marks.sweepIdx), xt = x(marks.targetHitIdx);
+      const yi = y(marks.inducementP), yt = y(marks.targetP);
+      return (<g>
+        <line x1={xi} y1={yi} x2={xs} y2={yi} stroke={brand.periwinkle} strokeWidth="2.5" strokeDasharray="8 6" />
+        <line x1={xi} y1={yt} x2={xt} y2={yt} stroke={brand.accent} strokeWidth="2.5" strokeDasharray="8 6" />
+        <line x1={xs} y1={yi} x2={xs} y2={yi - 34 * tagT} stroke={brand.bear} strokeWidth="5" strokeLinecap="round" />
+        {tagT > 0 && <><SvgTag cx={xs} ty={yi - 76} text="Inducement Sweep" fill={brand.bear} fs={17} maxW={W} /><SvgTag cx={xt} ty={yt + 18} text="Real POI / Level" fill={brand.accent} fs={16} maxW={W} /></>}
       </g>);
     }
     if (feature === 'trade_plan') {
