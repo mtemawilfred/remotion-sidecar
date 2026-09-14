@@ -196,24 +196,33 @@ function LiveSegment({ seg, srcUrl, fps }) {
 // Audio and captions are OUTSIDE Freeze so they advance normally.
 function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand }) {
   const frozenVideoFrame = Math.round(seg.timestamp * fps);
+  // Called outside the Sequence → absolute frame; make it segment-relative.
+  const t     = (useCurrentFrame() - seg.frameStart) / fps;
+  const promo = productPopupState(t, productWindow(seg.captions, seg.duration));
 
   return (
     <Sequence from={seg.frameStart} durationInFrames={seg.frameCount}>
 
-      {/* ── FROZEN VIDEO FRAME ────────────────────────────────────────────── */}
-      <Freeze frame={frozenVideoFrame}>
-        <AbsoluteFill>
-          <OffthreadVideo
-            src={srcUrl}
-            volume={0}
-            style={{
-              width:     '100%',
-              height:    '100%',
-              objectFit: 'contain',
-            }}
-          />
-        </AbsoluteFill>
-      </Freeze>
+      {/* ── FROZEN VIDEO FRAME (blurs while the product card is up) ───────── */}
+      <AbsoluteFill style={promo.blur > 0 ? { filter: `blur(${(promo.blur * POPUP_BLUR_PX).toFixed(1)}px)` } : undefined}>
+        <Freeze frame={frozenVideoFrame}>
+          <AbsoluteFill>
+            <OffthreadVideo
+              src={srcUrl}
+              volume={0}
+              style={{
+                width:     '100%',
+                height:    '100%',
+                objectFit: 'contain',
+              }}
+            />
+          </AbsoluteFill>
+        </Freeze>
+      </AbsoluteFill>
+
+      {/* ── PRODUCT POP-UP ────────────────────────────────────────────────── */}
+      {/* Above the video, BELOW the captions — must never hide them.         */}
+      {promo.blur > 0 && <ProductPopup state={promo} />}
 
       {/* ── VOICEOVER AUDIO ───────────────────────────────────────────────── */}
       {/* Outside Freeze — advances from frame 0 of this Sequence.            */}
@@ -451,6 +460,110 @@ function TalkingCaptions({ captions, fps, brand, side }) {
             })}
           </div>
         </div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+
+// ── ProductPopup ─────────────────────────────────────────────────────────────
+// When the voiceover names the "PipsGravity Mastermind Trading Plan", the product
+// image slides in from the RIGHT on a white card, holds, and slides out to the
+// LEFT, max 4 s. The frozen video blurs + dims behind it; captions stay on top.
+// Owner-approved look: preview v3 (maint doc MAINT-2026-09-14 Session 7f).
+const POPUP_IN      = 0.55;   // s, easeOutBack from the right, tilt +8° → 0
+const POPUP_HOLD    = 2.45;   // s, gentle float + one light sweep
+const POPUP_OUT     = 0.5;    // s, easeInCubic out to the left, tilt 0 → -8°
+const POPUP_MAX     = 4;      // s, Owner cap
+const POPUP_BLUR_PX = 40;     // preview's 16px on a ~400px stage, scaled to 1080
+const POPUP_DIM     = 0.35;
+
+const normWord = (w) => String(w || '').toLowerCase().replace(/[^a-z]/g, '');
+
+// Finds the first "(PipsGravity) Mastermind Trading Plan" in a segment's word
+// timestamps. Tolerates Whisper splits ("Pips Gravity", "Master mind") and
+// punctuation. Returns { start, end } in segment seconds, or null.
+export function productWindow(captions, segDuration) {
+  const w = (captions || []).map((c) => normWord(c.word));
+  for (let i = 0; i < w.length; i++) {
+    let next = i + 1;
+    if (w[i] === 'master' && w[i + 1] === 'mind') next = i + 2;
+    else if (!w[i].startsWith('mastermind')) continue;
+    if (w[next] !== 'trading') continue;
+    let first = i;                                         // start on "PipsGravity" if it leads
+    if (/gravitys?$/.test(w[i - 1] || '')) first = i - 1;
+    if (w[first] === 'gravity' && w[first - 1] === 'pips') first -= 1;
+    const start = captions[first].start;
+    const end   = Math.min(start + POPUP_IN + POPUP_HOLD + POPUP_OUT, start + POPUP_MAX, segDuration ?? Infinity);
+    return end > start ? { start, end } : null;
+  }
+  return null;
+}
+
+const outBack = (p) => { const k = 1.55; return 1 + (k + 1) * (p - 1) ** 3 + k * (p - 1) ** 2; };
+
+// Pure motion state for time t (segment seconds). blur 0 = popup not on screen.
+export function productPopupState(t, win) {
+  const off = { blur: 0, x: 130, rot: 8, y: 0, opacity: 0, sweep: 250 };
+  if (!win || t < win.start || t >= win.end) return off;
+  const total = win.end - win.start;
+  // Short window (product named right before the pause ends): shrink in/out, drop hold.
+  const k    = Math.min(1, total / (POPUP_IN + POPUP_OUT));
+  const tin  = POPUP_IN * k;
+  const tout = POPUP_OUT * k;
+  const hold = total - tin - tout;
+  const a    = t - win.start;
+  if (a < tin) {
+    const e = outBack(clamp01(a / tin));
+    return { blur: clamp01(a / tin), x: 130 - 130 * e, rot: 8 - 8 * e, y: 0, opacity: clamp01(a / 0.16), sweep: 250 };
+  }
+  if (a < tin + hold) {
+    const h = a - tin;
+    return { blur: 1, x: 0, rot: 0, y: Math.sin((h / POPUP_HOLD) * Math.PI * 2), opacity: 1, sweep: 250 - clamp01((h - 0.3) / 0.9) * 250 };
+  }
+  const o = clamp01((a - tin - hold) / tout);
+  return { blur: 1 - o, x: -130 * o ** 3, rot: -8 * o ** 3, y: 0, opacity: 1 - clamp01((a - tin - hold - tout + 0.16) / 0.16), sweep: 250 };
+}
+
+function ProductPopup({ state }) {
+  const cqw = CANVAS_W / 100;   // preview units were % of stage width
+  return (
+    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+      <AbsoluteFill style={{ background: `rgba(6,10,18,${(state.blur * POPUP_DIM).toFixed(3)})` }} />
+      <div
+        style={{
+          position:  'absolute',
+          left:      11 * cqw,
+          top:       30 * cqw,
+          width:     78 * cqw,
+          opacity:   state.opacity,
+          transform: `translate(${state.x}%, ${state.y * 0.5 * cqw}px) rotate(${state.rot}deg)`,
+        }}
+      >
+        <div
+          style={{
+            background:   '#FFFFFF',
+            borderRadius: 4 * cqw,
+            padding:      3 * cqw,
+            boxShadow:    `0 ${5 * cqw}px ${10 * cqw}px ${-3 * cqw}px rgba(0,0,0,.6), 0 0 0 ${0.3 * cqw}px rgba(255,255,255,.6)`,
+          }}
+        >
+          <Img
+            src={staticFile('assets/products/mastermind_trading_plan.png')}
+            style={{ display: 'block', width: '100%', height: 'auto' }}
+          />
+        </div>
+        <div
+          style={{
+            position:           'absolute',
+            inset:              0,
+            borderRadius:       4 * cqw,
+            background:         'linear-gradient(105deg,transparent 40%,rgba(255,255,255,.75) 50%,transparent 60%)',
+            backgroundSize:     '250% 100%',
+            backgroundPosition: `${state.sweep}% 0`,
+            mixBlendMode:       'soft-light',
+          }}
+        />
       </div>
     </AbsoluteFill>
   );
