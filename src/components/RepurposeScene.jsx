@@ -5,7 +5,7 @@
 // HOW THE FREEZE-AND-EXPLAIN MODEL WORKS:
 //   Source video plays normally (LIVE segment) until a voiceover timestamp.
 //   At that timestamp the video FREEZES on that exact frame (FREEZE segment).
-//   While frozen: voiceover audio plays + karaoke captions advance word-by-word.
+//   While frozen: voiceover audio plays + talking-astronaut bubble shows words as spoken.
 //   Then the video RESUMES from that point (next LIVE segment).
 //   This repeats for every segment in the narration sequence.
 //
@@ -15,7 +15,7 @@
 //                     Original audio is MUTED (volume=0) — voiceover replaces it
 //   Lesson Title    — dark pill overlay, pinned to TOP of canvas, full duration
 //                     Always visible regardless of source video aspect ratio
-//   Captions        — dark pill overlay, pinned to BOTTOM of canvas, freeze only
+//   Captions        — astronaut avatar + speech bubble, BOTTOM of canvas, freeze only
 //                     Always visible regardless of source video aspect ratio
 //   CTA banner      — 1080×110px pre-baked image, bottom 440px, CTA segment only
 //   Voiceover audio — each freeze segment plays its own WAV chunk
@@ -57,6 +57,7 @@ import {
   Img,
   OffthreadVideo,
   Sequence,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
@@ -99,13 +100,16 @@ export const RepurposeScene = ({ sceneJson }) => {
   const segmentsWithFrames = [];
   let frameOffset = 0;
 
+  let freezeCount = 0;
   for (const seg of sequence) {
     const durationSec = seg.type === 'live'
       ? (seg.end_time - seg.start_time)
       : seg.duration;
     const frameCount = Math.ceil(durationSec * fps);
 
-    segmentsWithFrames.push({ ...seg, frameStart: frameOffset, frameCount });
+    // Talking captions switch sides per pause: 1st freeze left, 2nd right, ...
+    const side = seg.type === 'live' ? null : (freezeCount++ % 2 ? 'right' : 'left');
+    segmentsWithFrames.push({ ...seg, frameStart: frameOffset, frameCount, side });
     frameOffset += frameCount;
   }
 
@@ -184,7 +188,7 @@ function LiveSegment({ seg, srcUrl, fps }) {
 // ── FreezeSegment ──────────────────────────────────────────────────────────────
 // Video frozen on seg.timestamp for the full segment duration.
 // Voiceover audio plays from frame 0 of this Sequence.
-// Karaoke captions advance word-by-word with the audio.
+// Talking captions: words pop into a speech bubble as they are spoken.
 // CTA banner fades in if show_cta is true.
 //
 // KEY: <Freeze frame={N}> makes ALL its children behave as if the current
@@ -217,14 +221,14 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand }) {
         <Audio src={seg.audio_url} />
       )}
 
-      {/* ── KARAOKE CAPTIONS ─────────────────────────────────────────────── */}
-      {/* Dark pill overlay pinned to bottom of canvas.                        */}
-      {/* Renders on any aspect ratio — no letterbox dependency.              */}
+      {/* ── TALKING CAPTIONS ─────────────────────────────────────────────── */}
+      {/* Astronaut avatar + speech bubble pinned to bottom of canvas.         */}
       {seg.captions && seg.captions.length > 0 && (
-        <KaraokeCaptions
+        <TalkingCaptions
           captions={seg.captions}
           fps={fps}
           brand={brand}
+          side={seg.side}
         />
       )}
 
@@ -283,94 +287,169 @@ function LessonTitle({ title, brand }) {
 }
 
 
-// ── KaraokeCaptions ──────────────────────────────────────────────────────────
-// Word-by-word karaoke captions pinned to the bottom of the canvas.
-// Dark semi-transparent pill background ensures readability on any surface.
+// ── TalkingCaptions ──────────────────────────────────────────────────────────
+// "Talking astronaut": round PipsGravity avatar + comic speech bubble.
+// Words pop in one by one as spoken (no karaoke highlight). Owner-approved look
+// (maint doc MAINT-2026-09-14 Session 5).
 //
-// FIX — 2 lines at a time:
-//   Words are grouped into chunks of max 8 (≈2 lines of 4 words each).
-//   Chunk breaks at sentence-ending punctuation (if chunk has ≥3 words).
-//   Only the active chunk is rendered — the pill never shows more than
-//   8 words at once. Previous chunk vanishes when next chunk begins.
-//
-// Active word: bright blue (#00D4FF), bold.
-// Past words in active chunk: white, dimmed (55% opacity).
-// Future words in active chunk: white, normal weight.
-function KaraokeCaptions({ captions, fps, brand }) {
+// Lines: the bubble is a FIXED size (always 2 text lines tall, Owner 2026-09-14);
+//   only the words change. A line holds max 6 words and max LINE_CHARS characters
+//   so it always fits in 2 lines. Sentence ends always break; commas once >=3 words.
+// Side: fixed for the whole freeze segment (pause), alternating per pause —
+//   passed in by RepurposeScene. The avatar pops once; the bubble re-pops per line.
+// Future words are invisible but keep their layout, so the line never reflows.
+const AVATAR = 240;
+const INK    = '#13213A';
+const FONT_PX = 58;
+// ponytail: character budget stands in for text measuring (~17 chars per line at
+// 58px Inter 800 in a 614px text box). Swap for @remotion/layout-utils fitText if
+// long words ever clip.
+const LINE_CHARS = 28;
+
+// back-out overshoot, 0→1 with a small bounce past 1
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+const pop = (p) => { p = clamp01(p); const k = 1.9; return 1 + (k + 1) * (p - 1) ** 3 + k * (p - 1) ** 2; };
+
+function TalkingCaptions({ captions, fps, brand, side }) {
   const frame      = useCurrentFrame();
   const currentSec = frame / fps;
-  const fontFamily = brand.font_body || 'Inter';
+  const fontFamily = brand.font_body    || 'Inter';
+  const nameFont   = brand.font_heading || 'Oswald';
+  const gold       = brand.accent       || '#C9A84C';
+  const right      = side === 'right';
 
-  // ── Group captions into 2-line display chunks ──────────────────────────────
-  // Max 8 words per chunk. Break early at sentence-ending punctuation
-  // (only if chunk has at least 3 words — avoids tiny orphan chunks).
   const chunks = [];
   let current  = [];
   captions.forEach((cap) => {
+    const chars = current.reduce((n, c) => n + c.word.length + 1, cap.word.length);
+    if (current.length > 0 && (current.length >= 6 || chars > LINE_CHARS)) {
+      chunks.push(current);
+      current = [];
+    }
     current.push(cap);
-    const isBreak = /[.,!?;]$/.test(cap.word);
-    if ((isBreak && current.length >= 3) || current.length >= 8) {
-      chunks.push([...current]);
+    if (/[.!?]$/.test(cap.word) || (/[,;]$/.test(cap.word) && current.length >= 3)) {
+      chunks.push(current);
       current = [];
     }
   });
   if (current.length > 0) chunks.push(current);
 
-  // ── Find active chunk ──────────────────────────────────────────────────────
-  // A chunk becomes active once we reach its first word's start time.
-  // Walk forward — last matched index wins (chunk stays active until next starts).
-  let activeChunkIdx = 0;
-  chunks.forEach((chunk, idx) => {
-    if (currentSec >= chunk[0].start) activeChunkIdx = idx;
-  });
+  if (currentSec < captions[0].start) return null;
 
-  const activeChunk = chunks[activeChunkIdx] || [];
+  let activeIdx = 0;
+  chunks.forEach((chunk, idx) => { if (currentSec >= chunk[0].start) activeIdx = idx; });
+  const line = chunks[activeIdx];
 
-  // Hide before the first caption word starts
-  if (captions.length === 0 || currentSec < captions[0].start) return null;
+  const sinceFirst = (currentSec - captions[0].start) * fps;       // avatar clock
+  const sinceLine  = (currentSec - line[0].start) * fps;           // bubble clock
+  const bubbleF    = activeIdx === 0 ? sinceLine - 3 : sinceLine;  // first bubble waits for the avatar
+
+  // avatar bobs up on each spoken word
+  let bob = 0;
+  line.forEach((c) => { const d = (currentSec - c.start) * fps; if (d >= 0 && d < 5) bob = Math.max(bob, 1 - d / 5); });
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
       <div
         style={{
-          position:       'absolute',
-          bottom:         CAPTION_BOTTOM,
-          left:           60,
-          right:          60,
-          display:        'flex',
-          justifyContent: 'center',
+          position:      'absolute',
+          left:          48,
+          right:         48,
+          bottom:        CAPTION_BOTTOM,
+          display:       'flex',
+          flexDirection: right ? 'row-reverse' : 'row',
+          alignItems:    'flex-end',
+          gap:           26,
         }}
       >
-        {/* Dark pill — readable on white space, chart, or portrait video */}
+        <Img
+          src={staticFile('assets/avatar/profile_picture.jpg')}
+          style={{
+            flex:         'none',
+            width:        AVATAR,
+            height:       AVATAR,
+            borderRadius: '50%',
+            background:   '#FFFFFF',
+            border:       `8px solid ${gold}`,
+            boxShadow:    `0 0 0 6px ${INK}, 0 12px 30px rgba(0,0,0,.35)`,
+            transform:    `scale(${pop(sinceFirst / 9)}) translateY(${-10 * bob}px)`,
+          }}
+        />
         <div
           style={{
-            background:    'rgba(0, 0, 0, 0.62)',
-            borderRadius:  20,
-            padding:       '24px 44px',
-            maxWidth:      '100%',
-            textAlign:     'center',
-            lineHeight:    1.4,
+            position:        'relative',
+            flex:            1,
+            background:      '#FFFFFF',
+            border:          `6px solid ${INK}`,
+            borderRadius:    44,
+            padding:         '44px 46px 40px',
+            boxShadow:       '0 12px 30px rgba(0,0,0,.28)',
+            opacity:         clamp01(bubbleF / 4),
+            transform:       `scale(${0.4 + 0.6 * pop(bubbleF / 9)})`,
+            transformOrigin: right ? '100% 100%' : '0 100%',
           }}
         >
-          {activeChunk.map((cap, i) => {
-            const isActive = currentSec >= cap.start && currentSec < cap.end;
-            const isPast   = currentSec >= cap.end;
-            return (
-              <span
-                key={i}
-                style={{
-                  display:    'inline',
-                  fontFamily: `${fontFamily}, Arial, sans-serif`,
-                  fontSize:   56,
-                  fontWeight: isActive ? 800 : 600,
-                  color:      isActive ? '#00D4FF' : '#FFFFFF',
-                  opacity:    isPast ? 0.55 : 1,
-                }}
-              >
-                {cap.word}{' '}
-              </span>
-            );
-          })}
+          {/* tail pointing at the avatar */}
+          <div
+            style={{
+              position:     'absolute',
+              bottom:       34,
+              [right ? 'right' : 'left']: -30,
+              width:        44,
+              height:       44,
+              background:   '#FFFFFF',
+              borderBottom: `6px solid ${INK}`,
+              [right ? 'borderRight' : 'borderLeft']: `6px solid ${INK}`,
+              transform:    right ? 'skewY(28deg) rotate(-18deg)' : 'skewY(-28deg) rotate(18deg)',
+            }}
+          />
+          <div
+            style={{
+              position:      'absolute',
+              top:           -30,
+              [right ? 'right' : 'left']: 40,
+              background:    INK,
+              color:         gold,
+              fontFamily:    `${nameFont}, Arial, sans-serif`,
+              fontSize:      30,
+              fontWeight:    700,
+              lineHeight:    1,
+              letterSpacing: 3,
+              padding:       '12px 22px',
+              borderRadius:  12,
+              textTransform: 'uppercase',
+            }}
+          >
+            PipsGravity
+          </div>
+          <div
+            style={{
+              fontFamily: `${fontFamily}, Arial, sans-serif`,
+              fontSize:   FONT_PX,
+              fontWeight: 800,
+              lineHeight: 1.3,
+              height:     FONT_PX * 1.3 * 2,   // fixed: bubble never resizes between lines
+              overflow:   'hidden',
+              color:      INK,
+            }}
+          >
+            {line.map((cap, i) => {
+              const w = (currentSec - cap.start) * fps;   // frames since this word was spoken
+              return (
+                <span
+                  key={i}
+                  style={{
+                    display:     'inline-block',
+                    marginRight: '0.26em',
+                    opacity:     clamp01(w / 3),
+                    transform:   `translateY(${(1 - clamp01(w / 5)) * 18}px) scale(${0.7 + 0.3 * pop(w / 6)})`,
+                  }}
+                >
+                  {cap.word}
+                </span>
+              );
+            })}
+          </div>
         </div>
       </div>
     </AbsoluteFill>

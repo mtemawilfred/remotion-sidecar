@@ -275,7 +275,7 @@ export const RemotionRoot = () => {
           Handles render_type: 'REPURPOSE_SCENE'.
           Canvas: 1080×1920 (9:16 vertical) — video repurposing pipeline.
           Freeze-and-explain: source video pauses at event timestamps while
-          voiceover plays with karaoke captions (2 lines at a time), then resumes.
+          voiceover plays with talking-astronaut captions, then resumes.
           30fps to match source video smoothness.
           durationInFrames=300 is a placeholder — renderer.js always overrides
           this with the real duration calculated from the sequence. */}
