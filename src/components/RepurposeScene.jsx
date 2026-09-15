@@ -100,8 +100,18 @@ export const RepurposeScene = ({ sceneJson }) => {
   const segmentsWithFrames = [];
   let frameOffset = 0;
 
+  // Sources often fade in from black, so the hook never freezes on second 0: it holds
+  // the last lesson frame (what hook_stamp names), or the first one after a
+  // flash-forward rewind (Owner 2026-09-15, black opening frame in run 64818).
+  const lessonTs = sequence.filter((s) => s.type === 'freeze' && s.event_type === 'commentary').map((s) => s.timestamp);
+  const hookTs = (fx) => (fx === 'flash_forward' ? lessonTs[0] : lessonTs[lessonTs.length - 1]);
+
   let freezeCount = 0;
-  for (const seg of sequence) {
+  for (const raw of sequence) {
+    const seg = !lessonTs.length ? raw
+      : raw.type === 'flash' ? { ...raw, rewind_to: lessonTs[0] }
+      : raw.type === 'freeze' && raw.event_type === 'hook' ? { ...raw, timestamp: hookTs(raw.fx) }
+      : raw;
     // Must match segSeconds() in n8n "Prepare Render Context" (sets duration_ms).
     const durationSec = seg.type === 'live'
       ? (seg.end_time - seg.start_time) / (seg.fx === 'speed' ? FX_SPEED : 1)
@@ -262,7 +272,8 @@ function FlashSegment({ seg, srcUrl, fps, brand, layout }) {
   const t     = (useCurrentFrame() - seg.frameStart) / fps;
   const hold  = seg.duration - 0.7;
   const rew   = clamp01((t - hold) / 0.7);
-  const shown = seg.timestamp * (1 - rew * rew * (3 - 2 * rew));
+  const to    = seg.rewind_to || 0;
+  const shown = seg.timestamp - (seg.timestamp - to) * rew * rew * (3 - 2 * rew);
   return (
     <Sequence from={seg.frameStart} durationInFrames={seg.frameCount}>
       <AbsoluteFill style={rew > 0 ? { filter: 'grayscale(0.6)' } : undefined}>
@@ -280,6 +291,20 @@ function FlashSegment({ seg, srcUrl, fps, brand, layout }) {
   );
 }
 
+// One font size for every recap label: the longest word fits one line and the whole
+// label fits two. 0.62em = bold uppercase width in the Arial fallback (widest case).
+// ponytail: width estimate, not measured; use @remotion/layout-utils measureText if labels still clip.
+function recapFontSize(texts, width) {
+  const CH = 0.62;
+  const longestWord = Math.max(...texts.flatMap((s) => s.split(/\s+/)).map((w) => w.length));
+  const longestText = Math.max(...texts.map((s) => s.length));
+  return Math.floor(Math.max(18, Math.min(36, width / (longestWord * CH), (2 * width * 0.9) / (longestText * CH))));
+}
+
+// Recap focus: the frozen chart blurs + dims as the first card arrives (0.6 s).
+const RECAP_BLUR_PX = 12;
+const recapFocus = (t) => easeOut3((t - 0.4) / 0.6);
+
 // Closing recap: each lesson's frame pops in as a labelled card, then stays.
 // Cards trim with startFrom + Freeze frame 0: Freeze frame={ts*fps} here showed the
 // wrong source second (10 s for 12 s and 18 s) in local stills, 2026-09-15.
@@ -288,15 +313,19 @@ function RecapCards({ cards, t, srcUrl, fps, layout }) {
   const gap = 22;
   const s = Math.min(310, (CANVAS_W - 90 - gap * (n - 1)) / n);
   const rowW = n * s + (n - 1) * gap;
+  const texts = cards.map((c, i) => (c.label ? `${i + 1} · ${c.label}` : `${i + 1}`));
+  const fontSize = recapFontSize(texts, s - 24);
+  const labelH = Math.ceil(fontSize * 2.3 + 16);   // two lines + breathing room
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
+      <AbsoluteFill style={{ background: INK, opacity: 0.35 * recapFocus(t) }} />
       {cards.map((c, i) => {
         const p = easeOut3((t - 0.6 - i * 0.45) / 0.6);
         if (p <= 0) return null;
         const x = (CANVAS_W - rowW) / 2 + i * (s + gap);
         return (
           <div key={i} style={{
-            position: 'absolute', left: x, top: layout.midY - s / 2 - 40, width: s, padding: 8, borderRadius: 18,
+            position: 'absolute', left: x, top: layout.midY - (s + labelH) / 2 - 8, width: s, padding: 8, borderRadius: 18,
             background: '#FFFFFF', boxShadow: '0 16px 40px rgba(0,0,0,.5)',
             transform: `translateX(${((1 - p) * -(x + s + 40)).toFixed(0)}px)`,
           }}>
@@ -308,10 +337,10 @@ function RecapCards({ cards, t, srcUrl, fps, layout }) {
               </Freeze>
             </div>
             <div style={{
-              height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
-              color: INK, fontFamily: 'Oswald, Arial, sans-serif', fontWeight: 700, lineHeight: 1.05,
-              fontSize: n > 3 ? 30 : 36,
-            }}>{c.label ? `${i + 1} · ${c.label}` : `${i + 1}`}</div>
+              height: labelH, padding: '0 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              color: INK, fontFamily: 'Oswald, Arial, sans-serif', fontWeight: 700, lineHeight: 1.1,
+              fontSize, overflowWrap: 'normal', overflow: 'hidden',
+            }}>{texts[i]}</div>
           </div>
         );
       })}
@@ -338,6 +367,7 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, layout, prevFx, whipOu
   // Retention effects on the frozen frame (the pop-up's own blur is kept as-is).
   const filters = [];
   if (promo.blur > 0) filters.push(`blur(${(promo.blur * POPUP_BLUR_PX).toFixed(1)}px)`);
+  if (seg.fx === 'recap' && seg.fx_cards?.length && recapFocus(t) > 0) filters.push(`blur(${(recapFocus(t) * RECAP_BLUR_PX).toFixed(1)}px)`);
   if (seg.fx === 'pause_signal' && t < 0.8) filters.push(`grayscale(${(1 - clamp01((t - 0.1) / 0.7)).toFixed(2)})`);
   const wOut = whipOut ? Math.max(0, 1 - (seg.duration - t) / FX_WHIP) : 0;   // slide out left, last 0.3 s
   if (wOut > 0) filters.push(`blur(${(wOut ** 3 * 24).toFixed(1)}px)`);
