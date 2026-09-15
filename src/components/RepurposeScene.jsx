@@ -102,23 +102,26 @@ export const RepurposeScene = ({ sceneJson }) => {
 
   let freezeCount = 0;
   for (const seg of sequence) {
+    // Must match segSeconds() in n8n "Prepare Render Context" (sets duration_ms).
     const durationSec = seg.type === 'live'
-      ? (seg.end_time - seg.start_time)
+      ? (seg.end_time - seg.start_time) / (seg.fx === 'speed' ? FX_SPEED : 1)
       : seg.duration;
     const frameCount = Math.ceil(durationSec * fps);
 
     // Talking captions switch sides per pause: 1st freeze left, 2nd right, ...
-    const side = seg.type === 'live' ? null : (freezeCount++ % 2 ? 'right' : 'left');
+    const side = seg.type !== 'freeze' ? null : (freezeCount++ % 2 ? 'right' : 'left');
     segmentsWithFrames.push({ ...seg, frameStart: frameOffset, frameCount, side });
     frameOffset += frameCount;
   }
+  const layout = bandLayout(sceneJson.source_width, sceneJson.source_height);
 
   return (
     <AbsoluteFill style={{ overflow: 'hidden', background: '#FFFFFF' }}>
 
       {/* ── VIDEO SEGMENTS ──────────────────────────────────────────────────
           Live and freeze segments rendered in sequence order.
-          Each Sequence clips rendering to its time window. */}
+          Each Sequence clips rendering to its time window.
+          seg.fx = retention effect picked at random per slot in n8n. */}
       {segmentsWithFrames.map((seg, i) =>
         seg.type === 'live' ? (
           <LiveSegment
@@ -126,7 +129,11 @@ export const RepurposeScene = ({ sceneJson }) => {
             seg={seg}
             srcUrl={srcUrl}
             fps={fps}
+            brand={brand}
+            layout={layout}
           />
+        ) : seg.type === 'flash' ? (
+          <FlashSegment key={i} seg={seg} srcUrl={srcUrl} fps={fps} brand={brand} layout={layout} />
         ) : (
           <FreezeSegment
             key={i}
@@ -135,6 +142,9 @@ export const RepurposeScene = ({ sceneJson }) => {
             ctaUrl={ctaUrl}
             fps={fps}
             brand={brand}
+            layout={layout}
+            prevFx={segmentsWithFrames[i - 1]?.type === 'flash' ? 'flash' : null}
+            whipOut={segmentsWithFrames[i + 1]?.fx === 'whip'}
           />
         )
       )}
@@ -164,14 +174,18 @@ export const RepurposeScene = ({ sceneJson }) => {
 // Source video plays from start_time to end_time at normal speed.
 // volume={0}: original audio muted — voiceover replaces it.
 // No captions or audio overlay — those belong to freeze segments only.
-function LiveSegment({ seg, srcUrl, fps }) {
+function LiveSegment({ seg, srcUrl, fps, brand, layout }) {
+  const t = (useCurrentFrame() - seg.frameStart) / fps;
+  // whip: the video slides in from the right over 0.3 s with motion blur
+  const whip = seg.fx === 'whip' && t < FX_WHIP ? 1 - easeOut3(t / FX_WHIP) : 0;
   return (
     <Sequence from={seg.frameStart} durationInFrames={seg.frameCount}>
-      <AbsoluteFill>
+      <AbsoluteFill style={whip ? { transform: `translateX(${(whip * CANVAS_W).toFixed(0)}px)`, filter: `blur(${(whip * 24).toFixed(1)}px)` } : undefined}>
         <OffthreadVideo
           src={srcUrl}
           startFrom={Math.round(seg.start_time * fps)}
           endAt={Math.round(seg.end_time * fps)}
+          playbackRate={seg.fx === 'speed' ? FX_SPEED : 1}
           volume={0}
           style={{
             width:     '100%',
@@ -180,7 +194,128 @@ function LiveSegment({ seg, srcUrl, fps }) {
           }}
         />
       </AbsoluteFill>
+      {seg.fx === 'speed' && (
+        <FxChip text="1.5× ▶▶" x={CANVAS_W - 190} y={layout.chipY} size={38} light brand={brand} t={t - 0.1} fps={fps} />
+      )}
+      {seg.fx === 'next_tease' && <NextTease text={seg.fx_text} t={t} dur={seg.frameCount / fps} layout={layout} brand={brand} />}
     </Sequence>
+  );
+}
+
+
+// ── Retention effects (Owner-approved v2 options, maint retention-edits-v2) ─────
+// n8n picks one effect per slot at random, no repeats inside a video until a pool
+// runs out: hook = flash_forward | hook_stamp, pause = pause_signal | key_term |
+// gold_words, live = whip | speed | next_tease, closing = recap. The product
+// pop-up is NOT an effect and is never changed by these; they render beneath it.
+const FX_SPEED = 1.5;
+const FX_WHIP  = 0.3;   // s
+const easeOut3 = (p) => 1 - (1 - clamp01(p)) ** 3;
+
+// Where the empty white bands are for a source contained in 1080×1920.
+// Portrait sources have no band: labels then sit over the video, under the title.
+function bandLayout(sw, sh) {
+  const vh     = sw && sh ? Math.min(CANVAS_H, (CANVAS_W * sh) / sw) : CANVAS_W;
+  const top    = (CANVAS_H - vh) / 2;
+  const bottom = top + vh;
+  return { top, bottom, labelY: Math.max(270, top - 90), chipY: Math.max(260, top + 60), teaseY: Math.min(1700, bottom + 120), midY: CANVAS_H / 2 };
+}
+
+function FxChip({ text, x, y, size = 46, light, bg, t, fps, out = Infinity, brand }) {
+  if (t < 0 || t > out + 0.3) return null;
+  const f = t * fps;
+  return (
+    <div style={{
+      position: 'absolute', left: x, top: y, transform: `translate(-50%, -50%) scale(${pop(f / 8)})`,
+      opacity: clamp01(f / 3) * (1 - clamp01((t - out) / 0.3)),
+      background: bg || (light ? '#FFFFFF' : INK), color: light ? INK : '#FFFFFF',
+      fontFamily: `${brand.font_heading || 'Oswald'}, Arial, sans-serif`, fontSize: size, fontWeight: 700,
+      letterSpacing: 2, textTransform: 'uppercase', whiteSpace: 'nowrap', lineHeight: 1,
+      padding: `${size * 0.4}px ${size * 0.7}px`, borderRadius: size * 0.4,
+      boxShadow: '0 10px 26px rgba(0,0,0,.3)',
+    }}>{text}</div>
+  );
+}
+
+const WhiteFlash = ({ a }) => (a > 0 ? <AbsoluteFill style={{ background: '#FFFFFF', opacity: clamp01(a) }} /> : null);
+
+// "<NEXT EVENT> NEXT ↓" bar slides into the bottom band while the video plays.
+function NextTease({ text, t, dur, layout, brand }) {
+  const outAt = Math.max(1.4, Math.min(dur - 0.4, 4.3));
+  const x = (-1 + easeOut3((t - 0.3) / 0.4) - clamp01((t - outAt) / 0.4) ** 3) * CANVAS_W;
+  if (t < 0.3 || t > outAt + 0.4) return null;
+  return (
+    <div style={{
+      position: 'absolute', left: 60, width: 960, top: layout.teaseY - 75, height: 150, borderRadius: 20,
+      background: INK, color: brand.accent || '#C9A84C', transform: `translateX(${x.toFixed(0)}px)`,
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 50px', boxSizing: 'border-box',
+      fontFamily: `${brand.font_heading || 'Oswald'}, Arial, sans-serif`, fontSize: 60, fontWeight: 700, letterSpacing: 2,
+    }}>
+      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
+      <span style={{ transform: `translateY(${(Math.sin(t * 9) * 10).toFixed(1)}px)` }}>↓</span>
+    </div>
+  );
+}
+
+// Flash-forward: open on the last lesson frame with the tease, then rewind to 0.
+function FlashSegment({ seg, srcUrl, fps, brand, layout }) {
+  const t     = (useCurrentFrame() - seg.frameStart) / fps;
+  const hold  = seg.duration - 0.7;
+  const rew   = clamp01((t - hold) / 0.7);
+  const shown = seg.timestamp * (1 - rew * rew * (3 - 2 * rew));
+  return (
+    <Sequence from={seg.frameStart} durationInFrames={seg.frameCount}>
+      <AbsoluteFill style={rew > 0 ? { filter: 'grayscale(0.6)' } : undefined}>
+        <Freeze frame={Math.round(shown * fps)}>
+          <AbsoluteFill>
+            <OffthreadVideo src={srcUrl} volume={0} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+          </AbsoluteFill>
+        </Freeze>
+      </AbsoluteFill>
+      {rew > 0 && <AbsoluteFill style={{ backgroundImage: 'repeating-linear-gradient(0deg, rgba(255,255,255,.08) 0 6px, transparent 6px 18px)' }} />}
+      {rew > 0
+        ? <FxChip text="◀◀ REWIND" x={CANVAS_W / 2} y={layout.labelY} size={48} light brand={brand} t={t - hold} fps={fps} />
+        : <FxChip text={seg.fx_text} x={CANVAS_W / 2} y={layout.labelY} size={54} brand={brand} t={t} fps={fps} />}
+    </Sequence>
+  );
+}
+
+// Closing recap: each lesson's frame pops in as a labelled card, then stays.
+// Cards trim with startFrom + Freeze frame 0: Freeze frame={ts*fps} here showed the
+// wrong source second (10 s for 12 s and 18 s) in local stills, 2026-09-15.
+function RecapCards({ cards, t, srcUrl, fps, layout }) {
+  const n = cards.length;
+  const gap = 22;
+  const s = Math.min(310, (CANVAS_W - 90 - gap * (n - 1)) / n);
+  const rowW = n * s + (n - 1) * gap;
+  return (
+    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+      {cards.map((c, i) => {
+        const p = easeOut3((t - 0.6 - i * 0.45) / 0.6);
+        if (p <= 0) return null;
+        const x = (CANVAS_W - rowW) / 2 + i * (s + gap);
+        return (
+          <div key={i} style={{
+            position: 'absolute', left: x, top: layout.midY - s / 2 - 40, width: s, padding: 8, borderRadius: 18,
+            background: '#FFFFFF', boxShadow: '0 16px 40px rgba(0,0,0,.5)',
+            transform: `translateX(${((1 - p) * -(x + s + 40)).toFixed(0)}px)`,
+          }}>
+            <div style={{ width: s, height: s, overflow: 'hidden', borderRadius: 12, position: 'relative' }}>
+              <Freeze frame={0}>
+                <AbsoluteFill>
+                  <OffthreadVideo src={srcUrl} startFrom={Math.round(c.timestamp * fps)} volume={0} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </AbsoluteFill>
+              </Freeze>
+            </div>
+            <div style={{
+              height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              color: INK, fontFamily: 'Oswald, Arial, sans-serif', fontWeight: 700, lineHeight: 1.05,
+              fontSize: n > 3 ? 30 : 36,
+            }}>{c.label ? `${i + 1} · ${c.label}` : `${i + 1}`}</div>
+          </div>
+        );
+      })}
+    </AbsoluteFill>
   );
 }
 
@@ -194,17 +329,29 @@ function LiveSegment({ seg, srcUrl, fps }) {
 // KEY: <Freeze frame={N}> makes ALL its children behave as if the current
 // Remotion frame is N. OffthreadVideo inside Freeze renders at time N/fps.
 // Audio and captions are OUTSIDE Freeze so they advance normally.
-function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand }) {
+function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, layout, prevFx, whipOut }) {
   const frozenVideoFrame = Math.round(seg.timestamp * fps);
   // Called outside the Sequence → absolute frame; make it segment-relative.
   const t     = (useCurrentFrame() - seg.frameStart) / fps;
   const promo = productPopupState(t, productWindow(seg.captions, seg.duration));
 
+  // Retention effects on the frozen frame (the pop-up's own blur is kept as-is).
+  const filters = [];
+  if (promo.blur > 0) filters.push(`blur(${(promo.blur * POPUP_BLUR_PX).toFixed(1)}px)`);
+  if (seg.fx === 'pause_signal' && t < 0.8) filters.push(`grayscale(${(1 - clamp01((t - 0.1) / 0.7)).toFixed(2)})`);
+  const wOut = whipOut ? Math.max(0, 1 - (seg.duration - t) / FX_WHIP) : 0;   // slide out left, last 0.3 s
+  if (wOut > 0) filters.push(`blur(${(wOut ** 3 * 24).toFixed(1)}px)`);
+  const flashA = seg.fx === 'pause_signal' ? 0.8 - t * 6 : prevFx === 'flash' ? 0.7 - t * 4 : 0;
+  const videoStyle = {
+    ...(filters.length ? { filter: filters.join(' ') } : {}),
+    ...(wOut > 0 ? { transform: `translateX(${(-(wOut ** 3) * CANVAS_W).toFixed(0)}px)` } : {}),
+  };
+
   return (
     <Sequence from={seg.frameStart} durationInFrames={seg.frameCount}>
 
       {/* ── FROZEN VIDEO FRAME (blurs while the product card is up) ───────── */}
-      <AbsoluteFill style={promo.blur > 0 ? { filter: `blur(${(promo.blur * POPUP_BLUR_PX).toFixed(1)}px)` } : undefined}>
+      <AbsoluteFill style={filters.length || wOut > 0 ? videoStyle : undefined}>
         <Freeze frame={frozenVideoFrame}>
           <AbsoluteFill>
             <OffthreadVideo
@@ -219,6 +366,21 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand }) {
           </AbsoluteFill>
         </Freeze>
       </AbsoluteFill>
+
+      {/* ── RETENTION EFFECTS (beneath the pop-up and captions) ───────────── */}
+      <WhiteFlash a={flashA} />
+      {seg.fx === 'recap' && seg.fx_cards?.length > 0 && (
+        <RecapCards cards={seg.fx_cards} t={t} srcUrl={srcUrl} fps={fps} layout={layout} />
+      )}
+      {seg.fx === 'pause_signal' && (
+        <FxChip text="❚❚ PAUSE" x={CANVAS_W - 190} y={layout.chipY} size={40} light brand={brand} t={t - 0.1} fps={fps} out={1.5} />
+      )}
+      {seg.fx === 'hook_stamp' && (
+        <FxChip text={seg.fx_text} x={CANVAS_W / 2} y={layout.labelY} size={54} bg="#C0392B" brand={brand} t={t - 0.2} fps={fps} />
+      )}
+      {seg.fx === 'key_term' && (
+        <FxChip text={seg.fx_text} x={CANVAS_W / 2} y={layout.labelY} size={50} brand={brand} t={t - (seg.fx_at || 0)} fps={fps} out={3.5} />
+      )}
 
       {/* ── PRODUCT POP-UP ────────────────────────────────────────────────── */}
       {/* Above the video, BELOW the captions — must never hide them.         */}
@@ -238,6 +400,7 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand }) {
           fps={fps}
           brand={brand}
           side={seg.side}
+          goldWords={seg.fx === 'gold_words' ? seg.fx_words : null}
         />
       )}
 
@@ -319,7 +482,7 @@ const LINE_CHARS = 28;
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 const pop = (p) => { p = clamp01(p); const k = 1.9; return 1 + (k + 1) * (p - 1) ** 3 + k * (p - 1) ** 2; };
 
-function TalkingCaptions({ captions, fps, brand, side }) {
+function TalkingCaptions({ captions, fps, brand, side, goldWords }) {
   const frame      = useCurrentFrame();
   const currentSec = frame / fps;
   const fontFamily = brand.font_body    || 'Inter';
@@ -444,12 +607,21 @@ function TalkingCaptions({ captions, fps, brand, side }) {
           >
             {line.map((cap, i) => {
               const w = (currentSec - cap.start) * fps;   // frames since this word was spoken
+              // gold_words effect: a gold marker sweeps behind the key term as it is spoken
+              const gold = goldWords && goldWords.includes(normWord(cap.word));
               return (
                 <span
                   key={i}
                   style={{
                     display:     'inline-block',
                     marginRight: '0.26em',
+                    ...(gold ? {
+                      backgroundImage:    `linear-gradient(${brand.accent || '#C9A84C'}, ${brand.accent || '#C9A84C'})`,
+                      backgroundRepeat:   'no-repeat',
+                      backgroundPosition: '0 85%',
+                      backgroundSize:     `${(easeOut3(w / 8) * 100).toFixed(0)}% 45%`,
+                      padding:            '0 0.08em',
+                    } : {}),
                     opacity:     clamp01(w / 3),
                     transform:   `translateY(${(1 - clamp01(w / 5)) * 18}px) scale(${0.7 + 0.3 * pop(w / 6)})`,
                   }}
