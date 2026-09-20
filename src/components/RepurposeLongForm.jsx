@@ -1697,6 +1697,160 @@ function OutroCTA({ c, seg, fps, brand }) {
   );
 }
 
+// ── ChartOverlay: draws the approved label library on the frozen real frame ──
+// Input: seg.chart.overlay = { frame_url, W, H, crop:[x0,y0,x1,y1], marks:[...] }
+// The SOLVER owns anchoring (frame-px points), tag TEXT and timing; this renderer
+// only maps frame px → canvas px and styles by `label` id. It never invents a
+// target and never reinterprets a claim (02_IMPLEMENTATION_PLAN Phase 6).
+// Spec: contracts/chart-rebuild-from-video/label-library/STEP2_GATE_REGISTER.md
+const INK = '#E8590C';                           // our single ink (approved mark_colours)
+const ZONE_TONE = { demand: '#0FA3B1', supply: '#D6336C' };
+// per-label: colour, dashed stroke, box-vs-line for `highlight`, tag side
+const LABEL_STYLE = {
+  bos:              { dash: 'dash' },
+  choch:            { dash: 'dash' },
+  liquidity_level:  { dash: 'dash' },
+  eqh_eql:          {},
+  inducement:       { dash: 'dot' },
+  sweep_marker:     {},
+  order_block:      { box: true },
+  fvg_box:          { box: true, dash: 'dash', colour: '#786EC8' },
+  range_box:        { box: true, dash: 'dash', colour: '#8A96A0', tagBelow: true },
+  move_arrow:       {},
+  expected_path:    { dash: 'dash', slow: true },
+  measure_bracket:  {},
+  candle_highlight: {},
+};
+const TAG_BELOW = /^(SSL|EQL|Sell-side|Equal lows|Discount)/;
+
+function markColour(m) {
+  const st = LABEL_STYLE[m.label] || {};
+  if (st.box) return ZONE_TONE[m.tone] || st.colour || INK;
+  return st.colour || INK;
+}
+
+function ChartOverlay({ overlay, fps, screen }) {
+  const frame = useCurrentFrame();
+  const t = (frame / fps) * 1000;
+  const [x0, y0, x1, y1] = overlay.crop || [0, 0, overlay.W, overlay.H];
+  const cw = Math.max(1, x1 - x0), ch = Math.max(1, y1 - y0);
+  const sx = CANVAS_W / cw, sy = CANVAS_H / ch;
+  const P = (pt) => [(pt[0] - x0) * sx, (pt[1] - y0) * sy];
+  const inCrop = (pt) => pt && pt[0] >= x0 - 1 && pt[0] <= x1 + 1 && pt[1] >= y0 - 1 && pt[1] <= y1 + 1;
+  const sp = (v) => v / screen;                  // desired SCREEN px → canvas px at the live inset scale
+
+  // fail closed: a mark whose anchor is missing or outside the crop is skipped.
+  const marks = (overlay.marks || []).filter((m) => {
+    const a = m.from && m.from.point, b = m.to && m.to.point;
+    if (!a && !b) return false;
+    if (a && !inCrop(a)) return false;
+    if (b && !inCrop(b)) return false;
+    return true;
+  });
+
+  const tags = [];
+  // a beat's zone box, so that beat's tag can be centred in it rather than stacked on its corner
+  const boxes = {};
+  for (const m of marks) {
+    if (m.kind !== 'highlight' || !(LABEL_STYLE[m.label] || {}).box || !m.from || !m.to) continue;
+    const a = P(m.from.point), b = P(m.to.point);
+    boxes[(m.id || '').split('.')[0]] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+  }
+  const shapes = marks.map((m, i) => {
+    const st = LABEL_STYLE[m.label] || {};
+    const col = markColour(m);
+    const start = (m.at_ms || 0) + (m.stagger || 0) * 90;
+    const dur = st.slow ? 900 : 520;             // dashed/expected marks draw slower (approved motion)
+    const p = interpolate(t, [start, start + dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+    if (p <= 0) return null;
+    const w = sp(3);
+    const dashArr = st.dash === 'dot' ? `${sp(2)} ${sp(6)}` : st.dash === 'dash' ? `${sp(12)} ${sp(9)}` : undefined;
+    const A = m.from && m.from.point ? P(m.from.point) : null;
+    const B = m.to && m.to.point ? P(m.to.point) : null;
+    const key = m.id || `m${i}`;
+
+    if (m.kind === 'label') {
+      // A zone's tag belongs inside its box (LPR-ZONE-IDENTITY-001); everything else sits beside
+      // its anchor. Either way it must clear the thing it names — a tag drawn over the candles it
+      // points at hides the evidence the lesson is making the viewer look at.
+      const box = st.box && boxes[key.split('.')[0]];
+      const at = box ? [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2] : (A || B);
+      const below = !box && (st.tagBelow || TAG_BELOW.test(m.text || '') || at[1] < CANVAS_H * 0.14);
+      tags.push({ key, x: at[0], y: at[1], below, centred: !!box, col, text: m.text, o: p });
+      return null;
+    }
+    if (m.kind === 'highlight' && (st.box || (A && B && Math.abs(B[1] - A[1]) > sp(10)))) {
+      // zone box — wipe in left→right (approved motion)
+      const bx = Math.min(A[0], B[0]), by = Math.min(A[1], B[1]);
+      const bw = Math.abs(B[0] - A[0]), bh = Math.abs(B[1] - A[1]);
+      return (
+        <rect key={key} x={bx} y={by} width={Math.max(1, bw * p)} height={bh}
+          fill={col} fillOpacity={0.18} stroke={col} strokeWidth={w} strokeDasharray={dashArr} />
+      );
+    }
+    if (m.kind === 'highlight' || m.kind === 'arrow') {
+      if (!A || !B) return null;
+      const ex = A[0] + (B[0] - A[0]) * p, ey = A[1] + (B[1] - A[1]) * p;   // stroke draw
+      const head = m.kind === 'arrow' && p > 0.88 ? arrowHead(A, B, sp(16), col) : null;
+      return (
+        <g key={key}>
+          <line x1={A[0]} y1={A[1]} x2={ex} y2={ey} stroke={col} strokeWidth={w} strokeLinecap="round" strokeDasharray={dashArr} />
+          {head}
+        </g>
+      );
+    }
+    if (m.kind === 'ring') {
+      const at = B || A;
+      const pulse = 1 + 0.06 * Math.sin(Math.max(0, t - start - dur) / 120);
+      const rx = sp(m.label === 'candle_highlight' ? 26 : 18) * pulse, ry = sp(24) * pulse;
+      return (
+        <ellipse key={key} cx={at[0]} cy={at[1]} rx={rx} ry={ry} fill="none" stroke={col} strokeWidth={w}
+          strokeDasharray={2 * Math.PI * ((rx + ry) / 2)} strokeDashoffset={2 * Math.PI * ((rx + ry) / 2) * (1 - p)} />
+      );
+    }
+    if (m.kind === 'bracket') {
+      if (!A || !B) return null;
+      const bx = Math.max(A[0], B[0]) + sp(18), arm = sp(14);
+      const yA = A[1], yB = yA + (B[1] - yA) * p;
+      return (
+        <g key={key} stroke={col} strokeWidth={w} fill="none" strokeLinecap="round">
+          <line x1={bx - arm} y1={yA} x2={bx} y2={yA} />
+          <line x1={bx} y1={yA} x2={bx} y2={yB} />
+          {p > 0.95 && <line x1={bx - arm} y1={B[1]} x2={bx} y2={B[1]} />}
+        </g>
+      );
+    }
+    return null;
+  });
+
+  return (
+    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', left: -x0 * sx, top: -y0 * sy, width: overlay.W * sx, height: overlay.H * sy }}>
+        <Img src={overlay.frame_url} style={{ width: '100%', height: '100%' }} />
+      </div>
+      <svg width={CANVAS_W} height={CANVAS_H} viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`} style={{ position: 'absolute', inset: 0 }}>
+        {shapes}
+      </svg>
+      {tags.map((tg) => (
+        <div key={tg.key} style={{
+          position: 'absolute', left: tg.x, top: tg.y,
+          transform: `translate(-50%, ${tg.centred ? '-50%' : tg.below ? '28%' : '-128%'})`,
+          opacity: tg.o, fontFamily: SANS, fontWeight: 800, fontSize: sp(34), lineHeight: 1.15,
+          color: tg.col, background: '#FFFFFF', border: `${sp(2)}px solid ${tg.col}`,
+          borderRadius: sp(8), padding: `${sp(5)}px ${sp(12)}px`, whiteSpace: 'nowrap',
+        }}>{tg.text}</div>
+      ))}
+    </AbsoluteFill>
+  );
+}
+
+function arrowHead(A, B, size, col) {
+  const ang = Math.atan2(B[1] - A[1], B[0] - A[0]);
+  const p1 = [B[0] - size * Math.cos(ang - 0.4), B[1] - size * Math.sin(ang - 0.4)];
+  const p2 = [B[0] - size * Math.cos(ang + 0.4), B[1] - size * Math.sin(ang + 0.4)];
+  return <polygon points={`${B[0]},${B[1]} ${p1[0]},${p1[1]} ${p2[0]},${p2[1]}`} fill={col} />;
+}
+
 function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
   const frame = useCurrentFrame();
   const chart = seg.chart || {};
@@ -1736,6 +1890,8 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
                 <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} muted objectFit="contain" style={fillVid} />
               </Sequence>
             </AbsoluteFill>
+          ) : chart.overlay && chart.overlay.frame_url ? (
+            <ChartOverlay overlay={chart.overlay} fps={fps} screen={scale * kb} />
           ) : chart.freeze_frame_url ? (
             <Img src={chart.freeze_frame_url} style={fill} />
           ) : (

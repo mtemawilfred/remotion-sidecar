@@ -28,7 +28,7 @@ const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
 const axios = require('axios');
-const { fetchAsset, hasServiceAccount } = require('./lib/driveFetch');
+const { fetchAsset, hasServiceAccount, isDriveUrl } = require('./lib/driveFetch');
 
 const { bundle }                         = require('@remotion/bundler');
 const { renderMedia, selectComposition } = require('@remotion/renderer');
@@ -207,6 +207,24 @@ async function setupRepurposeFiles(sceneJson) {
 
       return out;
     });
+
+    // ── Chart-overlay frame: CE_Agent_Render hands us the Drive PNG id as a URL.
+    // Chromium can't read a private Drive file, so pull it here (authenticated,
+    // same path as every other Drive asset) and serve it locally. On failure we
+    // drop the overlay so ChartLayer falls back to the freeze frame / footage.
+    for (const seg of timeline) {
+      const ov = seg.chart && seg.chart.overlay;
+      if (!ov || !ov.frame_url || !isDriveUrl(ov.frame_url)) continue;
+      try {
+        const name = `overlay_${seg.segment_id}.png`;
+        fs.writeFileSync(path.join(tmpDir, name), await fetchAsset(ov.frame_url));
+        seg.chart = { ...seg.chart, overlay: { ...ov, frame_url: `${baseUrl}/${name}` } };
+      } catch (e) {
+        console.warn(`[renderer] chart overlay frame fetch failed (seg ${seg.segment_id}): ${e.message} — footage fallback`);
+        const { overlay, ...chart } = seg.chart;
+        seg.chart = chart;
+      }
+    }
 
     // ── V2: meme/reaction asset map {name → {b64, media_type}} → served URLs ─
     // Keys stay the ORIGINAL asset names so the composition's
