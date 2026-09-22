@@ -158,24 +158,34 @@ function graphicsZone(mode, chartBox) {
   return { left: MARGIN, top: TOP, width: CANVAS_W - 2 * MARGIN, height: Math.max(180, bottom - TOP) };
 }
 
-// ── WP2: chart marks PERSIST across segments ────────────────────────────────
-// A mark is anchored in FRAME pixels of one frozen still, so it stays true only
-// while the chart is showing that same still. Key on the still (`frame_id`, else
-// `frame_s`); when the still changes the stack resets and the solver re-anchors
-// there — the renderer never moves a mark it was not given a point for
-// (label-library STEP2: "no anchor logic in Remotion").
+// ── WP2: chart marks PERSIST across segments (Owner ruling: re-anchor by object) ──
+// The bar is a trading platform: a drawing stays stuck to the chart, so it keeps
+// its place through a scroll, leaves frame when the chart scrolls past it, and
+// never re-animates when it comes back.
+//
+// What travels forward is HELD-NESS, not geometry. A mark already introduced is
+// drawn complete, but its POSITION always comes from the point the solver
+// measured for THIS still (`ledger.geometry_by_frame`) — the renderer still
+// places nothing itself (label-library STEP2: "no anchor logic in Remotion").
+// The one exception is a mark the solver stopped re-declaring while the chart is
+// still on the SAME still: its last point is by definition still true there, so
+// it is carried verbatim. Across a different still, no point = no mark.
 const markKey = (m) => m.id || JSON.stringify([m.label, m.kind, m.from && m.from.point, m.to && m.to.point]);
 
 function carryChartMarks(rawSegs) {
-  const out = []; let key, stack = [];
+  const out = []; const seen = new Map();          // markKey → { mark, frameKey } as last measured
   for (const s of rawSegs) {
     const ov = s.chart && s.chart.overlay;
-    if (!ov) { out.push([]); continue; }              // no overlay (or fetch dropped it) — carries nothing, breaks nothing
+    if (!ov) { out.push(null); continue; }         // no overlay (or the Drive fetch dropped it)
     const k = ov.frame_id ?? ov.frame_s;
-    if (k === undefined || k === null || k !== key) { key = k; stack = []; }
-    out.push(stack.slice());
-    const seen = new Set(stack.map(markKey));
-    for (const m of ov.marks || []) if (!seen.has(markKey(m))) { seen.add(markKey(m)); stack.push(m); }
+    const declared = new Set((ov.marks || []).map(markKey));
+    const held = [], carried = [];
+    for (const [key, rec] of seen) {
+      if (declared.has(key)) held.push(key);                                   // re-measured here: draw it complete
+      else if (k !== undefined && k !== null && rec.frameKey === k) carried.push(rec.mark); // same still: its point still holds
+    }
+    out.push({ held, carried });
+    for (const m of ov.marks || []) seen.set(markKey(m), { mark: m, frameKey: k });
   }
   return out;
 }
@@ -189,12 +199,12 @@ export const RepurposeLongForm = ({ sceneJson }) => {
   const srcUrl = sceneJson.source_video_url, bgmUrl = sceneJson.bg_music_url;
   const assets = sceneJson.assets || null;   // V2: meme/reaction media {name → {url, media_type}}
   const camMap = {}; (sceneJson.camera || []).forEach(c => { camMap[c.segment_id] = c; });
-  const carried = carryChartMarks(rawSegs);
+  const layers = carryChartMarks(rawSegs);
   let offset = 0;
   const segs = rawSegs.map((s, i) => {
     const durSec = isLegacy ? (s.type === 'live' ? s.end_time - s.start_time : s.duration) : (s.duration_ms || 3000) / 1000;
     const frameCount = Math.max(1, Math.ceil(durSec * fps));
-    const seg = { ...s, _i: i, frameStart: offset, frameCount, _carried: carried[i] }; offset += frameCount; return seg;
+    const seg = { ...s, _i: i, frameStart: offset, frameCount, _layer: layers[i] }; offset += frameCount; return seg;
   });
   return (
     <AbsoluteFill style={{ overflow: 'hidden', background: brand.background }}>
@@ -1900,7 +1910,7 @@ function markColour(m) {
   return st.colour || INK;
 }
 
-function ChartOverlay({ overlay, carried, fps, screen }) {
+function ChartOverlay({ overlay, layer, fps, screen }) {
   const frame = useCurrentFrame();
   const t = (frame / fps) * 1000;
   const [x0, y0, x1, y1] = overlay.crop || [0, 0, overlay.W, overlay.H];
@@ -1910,14 +1920,17 @@ function ChartOverlay({ overlay, carried, fps, screen }) {
   const inCrop = (pt) => pt && pt[0] >= x0 - 1 && pt[0] <= x1 + 1 && pt[1] >= y0 - 1 && pt[1] <= y1 + 1;
   const sp = (v) => v / screen;                  // desired SCREEN px → canvas px at the live inset scale
 
-  // WP2: marks carried from earlier segments on this SAME frozen still are drawn
-  // already-complete (`_held`) — the layer accumulates, it never replays. Anything
-  // this segment re-declares is dropped in favour of the held copy, so a mark can
-  // never double-draw at a seam.
-  const heldKeys = new Set((carried || []).map(markKey));
+  // WP2: an already-introduced mark draws complete (`_held`) — the layer accumulates,
+  // it never replays an entrance. A mark the solver re-measured for this still is
+  // drawn at its NEW point; one it stopped declaring on the same still keeps its
+  // last. Declared always wins, so a mark can never double-draw at a seam.
+  const heldKeys = new Set((layer && layer.held) || []);
+  const carried = (layer && layer.carried) || [];
+  const carriedKeys = new Set(carried.map(markKey));
   const all = [
-    ...(carried || []).map((m) => ({ ...m, _held: true })),
-    ...(overlay.marks || []).filter((m) => !heldKeys.has(markKey(m))),
+    ...carried.map((m) => ({ ...m, _held: true })),
+    ...(overlay.marks || []).filter((m) => !carriedKeys.has(markKey(m)))
+      .map((m) => (heldKeys.has(markKey(m)) ? { ...m, _held: true } : m)),
   ];
 
   // fail closed: a mark whose anchor is missing or outside the crop is skipped.
@@ -2072,7 +2085,7 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
               </Sequence>
             </AbsoluteFill>
           ) : chart.overlay && chart.overlay.frame_url ? (
-            <ChartOverlay overlay={chart.overlay} carried={seg._carried} fps={fps} screen={scale * kb} />
+            <ChartOverlay overlay={chart.overlay} layer={seg._layer} fps={fps} screen={scale * kb} />
           ) : chart.freeze_frame_url ? (
             <Img src={chart.freeze_frame_url} style={fill} />
           ) : (
