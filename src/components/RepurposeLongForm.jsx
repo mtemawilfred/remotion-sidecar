@@ -273,6 +273,20 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
 }
 
 // ── background treatment (kills empty/flat scenes) ──────────────────────────
+// The ghost wordmark used to be a flat 360px and ran off the right edge mid-word
+// ("FIRST CRAC", "PRECISION"), which reads as a bug rather than a bleed. Shrink it
+// until the whole word fits the frame (left:-30 bleed + ~40px of drift/rotation slack).
+const GHOST_MAX_FS = 360;
+const GHOST_BUDGET = CANVAS_W + 30 - 40;
+const _ghostFs = {};   // per-word cache — this runs every frame, measureText does not
+function ghostFontSize(text) {
+  if (_ghostFs[text] === undefined) {
+    const w = measureText({ text, fontFamily: SANS, fontSize: GHOST_MAX_FS, fontWeight: 900, letterSpacing: '-0.04em' }).width;
+    _ghostFs[text] = w > GHOST_BUDGET ? Math.floor(GHOST_MAX_FS * GHOST_BUDGET / w) : GHOST_MAX_FS;
+  }
+  return _ghostFs[text];
+}
+
 function BackgroundTreatment({ flow, seg, fps, brand }) {
   const frame = useCurrentFrame();
   const first = flow[0] || {};
@@ -284,10 +298,10 @@ function BackgroundTreatment({ flow, seg, fps, brand }) {
       {/* radial accent glow, breathing */}
       <div style={{ position: 'absolute', top: '-10%', right: '-8%', width: 1100, height: 1100, borderRadius: '50%',
         background: `radial-gradient(circle, rgba(192,83,31,${glow}) 0%, rgba(192,83,31,0) 60%)` }} />
-      {/* giant ghost word, slow drift, bleeding off-frame */}
+      {/* giant ghost word, slow drift — bleeds off the BOTTOM, never clipped mid-word on the right */}
       {ghost && (
         <div style={{ position: 'absolute', bottom: -40, left: -30, transform: drift(frame, fps, 10, 6, 11) + ' rotate(-4deg)',
-          fontFamily: SANS, fontWeight: 900, fontSize: 360, color: brand.primary, opacity: 0.05, whiteSpace: 'nowrap', letterSpacing: '-0.04em' }}>{ghost}</div>
+          fontFamily: SANS, fontWeight: 900, fontSize: ghostFontSize(ghost), color: brand.primary, opacity: 0.05, whiteSpace: 'nowrap', letterSpacing: '-0.04em' }}>{ghost}</div>
       )}
       {/* hairline rule */}
       <div style={{ position: 'absolute', left: MARGIN, right: MARGIN, top: 96, height: 2, background: brand.border, opacity: 0.7 }} />
@@ -302,6 +316,7 @@ const MEME_TYPES = ['meme_cutaway', 'meme', 'reaction_clip', 'asset_flash'];
 // motion-graphic (non-text) primitive types — used by the hook guard to suppress
 // candle_cluster injection when a real visual component is already present.
 const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'countdown', 'fvg', 'structure_break', 'trade_plan',
+  'multi_instrument_series', 'smt_divergence', 'correlated_pair_chart', 'two_chart_comparison',
   'hook_title', 'animated_title', 'title_card', 'chart_thumbnail_flash',
   'myth_buster', 'myth_vs_reality', 'misconception', 'debunk',
   'comparison_split', 'retail_vs_smart', 'two_column', 'side_by_side',
@@ -319,6 +334,7 @@ function estHeight(c) {
   const H = { hook_text: 240, heading: 150, concept_card: 250, callback_card: 200, stat_callout: 240,
     chart_concept: 460, candle_cluster: 460, zone_box: 460, liquidity_run: 460, flow_steps: 300, arrow: 120, diagram: 140,
     crowd: 210, fvg: 460, structure_break: 460, trade_plan: 460,
+    multi_instrument_series: 460, smt_divergence: 460, correlated_pair_chart: 460, two_chart_comparison: 460,
     // new library
     hook_title: 220, animated_title: 220, title_card: 220, chart_thumbnail_flash: 220,
     key_rule: 260, rule_card: 260, pro_tip: 260, key_point: 260, critical_rule: 260,
@@ -341,7 +357,8 @@ function estHeight(c) {
 }
 // Real measured height for text-heavy cards (best practice — measure, don't guess),
 // so the stack's fit-scale knows the true height and never overflows. Falls back to estHeight.
-const CHART_HEIGHT_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'fvg', 'structure_break', 'trade_plan'];
+const CHART_HEIGHT_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'fvg', 'structure_break', 'trade_plan',
+  'multi_instrument_series', 'smt_divergence', 'correlated_pair_chart', 'two_chart_comparison'];
 function measuredHeight(c, width) {
   try {
     // chart graphics render as an SVG at aspect ~470/900 (≈0.522) up to maxWidth 1280, + label
@@ -422,6 +439,11 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'fvg':
     case 'structure_break':
     case 'trade_plan':     return <ChartConcept {...p} />;
+    // ── two-instrument comparison → MultiInstrumentSeries (SMT divergence) ──
+    case 'multi_instrument_series':
+    case 'smt_divergence':
+    case 'correlated_pair_chart':
+    case 'two_chart_comparison': return <MultiInstrumentSeries {...p} />;
     // ── other motion-graphic primitives ──
     case 'flow_steps':     return <FlowSteps {...p} />;
     case 'arrow':          return <ArrowMark {...p} />;
@@ -1229,6 +1251,126 @@ function ChartConcept({ c, seg, fps, brand, idx }) {
         })}
         {overlay()}
       </svg>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// MultiInstrumentSeries — SMT divergence. Two ChartConcept-shaped panels, side by
+// side, same timeframe, each with its own swing-point read, plus the cross-
+// instrument comparison drawn on top (smt-divergence.md, SK-smt-divergence-001
+// invariants 2-3, `needs_new_claim:multi_instrument_series`). Every other chart
+// component in this file draws ONE candle series; SMT cannot be read off one, so
+// this is a sibling of `ChartConcept`, not a variant of it — same candle-drawing
+// approach (deterministic synthetic data, D3 scales, useCurrentFrame), reused per
+// panel rather than shared as one chart.
+// ════════════════════════════════════════════════════════════════════════════
+// One data set per correlation type: instrument A always confirms with a fresh
+// swing extreme; instrument B either fails to confirm (divergence — the taught
+// case) or confirms too (used for a same-direction/no-divergence contrast beat).
+// `positive`: both instruments normally move together (EUR/USD vs GBP/USD, etc.).
+// `negative`: instruments normally move opposite each other (a USD pair vs DXY).
+// Each fixture verified by direct arithmetic (mulberry32 is deterministic): A's marked candle
+// genuinely exceeds/undercuts A's own prior swing extreme (confirms); B's marked candle genuinely
+// does NOT exceed/undercut B's own prior swing extreme (fails to confirm) — the actual divergence
+// claim, not just two independent-looking series.
+const SMT_SETS = {
+  // Bearish SMT: instrument A prints a HIGHER HIGH; instrument B fails to confirm it.
+  bearish_positive: {
+    a: { closes: [0.42, 0.50, 0.46, 0.58, 0.53, 0.62, 0.57, 0.68, 0.64, 0.77], swingIdx: 3, newIdx: 8, mark: 'high' },
+    b: { closes: [0.44, 0.52, 0.48, 0.60, 0.50, 0.55, 0.51, 0.56, 0.52, 0.54], swingIdx: 3, newIdx: 8, mark: 'high' },
+    verdict: 'Bearish SMT', confirmSide: 'a', divergeSide: 'b'
+  },
+  // Bullish SMT: instrument A prints a LOWER LOW; instrument B holds above its own prior low.
+  bullish_positive: {
+    a: { closes: [0.58, 0.50, 0.54, 0.42, 0.47, 0.38, 0.43, 0.32, 0.36, 0.23], swingIdx: 3, newIdx: 8, mark: 'low' },
+    b: { closes: [0.56, 0.48, 0.52, 0.40, 0.50, 0.45, 0.49, 0.44, 0.48, 0.46], swingIdx: 3, newIdx: 8, mark: 'low' },
+    verdict: 'Bullish SMT', confirmSide: 'a', divergeSide: 'b'
+  },
+  // Inverse pair (e.g. a USD pair vs DXY): A makes a new low (bullish for A); DXY (B) should
+  // mirror with a new HIGH to confirm dollar strength, but fails to reach its own prior high.
+  bullish_negative: {
+    a: { closes: [0.58, 0.50, 0.54, 0.42, 0.47, 0.38, 0.43, 0.32, 0.36, 0.23], swingIdx: 3, newIdx: 8, mark: 'low' },
+    b: { closes: [0.42, 0.50, 0.46, 0.58, 0.48, 0.53, 0.49, 0.54, 0.50, 0.52], swingIdx: 3, newIdx: 8, mark: 'high' },
+    verdict: 'Bullish SMT', confirmSide: 'a', divergeSide: 'b', inverse: true
+  },
+};
+function buildSmtPanel(spec, seed) {
+  const rnd = mulberry32((seed | 0) + 1);
+  const closes = spec.closes.map(v => Math.max(0.08, Math.min(0.92, v + (rnd() - 0.5) * 0.015)));
+  const cands = closes.map((c, i) => {
+    const o = i === 0 ? c - 0.03 : closes[i - 1];
+    const wick = 0.010 + rnd() * 0.018;
+    return { o, c, up: c >= o, hi: Math.min(0.99, Math.max(o, c) + wick), lo: Math.max(0.01, Math.min(o, c) - wick) };
+  });
+  return { cands, closes };
+}
+function SmtPanel({ label, spec, seed, role, mark, W, H, padX, padTop, padBot, base, fps, brand, frame, tagT }) {
+  const { cands } = React.useMemo(() => buildSmtPanel(spec, seed), [spec, seed]);
+  const n = cands.length;
+  const x = scaleLinear().domain([0, n - 1]).range([padX, W - padX]);
+  const y = scaleLinear().domain([0, 1]).range([H - padBot, padTop]);
+  const slot = (W - 2 * padX) / (n - 1), bw = Math.min(20, slot * 0.6);
+  const priorCands = cands.slice(0, spec.swingIdx + 1);
+  const priorP = mark === 'high' ? Math.max(...priorCands.map((cd) => cd.hi)) : Math.min(...priorCands.map((cd) => cd.lo));
+  const newP = mark === 'high' ? cands[spec.newIdx].hi : cands[spec.newIdx].lo;
+  const confirmed = role === 'confirm';
+  const col = confirmed ? brand.bull : brand.bear;
+  const yPrior = y(priorP), yNew = y(newP), xNew = x(spec.newIdx);
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ width: 10, height: 10, borderRadius: 5, background: col }} />
+        <div style={{ fontFamily: MONOS, fontWeight: 700, fontSize: 22, letterSpacing: '0.06em', textTransform: 'uppercase', color: brand.slate }}>{label}</div>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', overflow: 'visible' }}>
+        <line x1={padX} y1={yPrior} x2={W - padX} y2={yPrior} stroke={brand.slate} strokeWidth="2" strokeDasharray="7 5" opacity="0.6" />
+        {cands.map((cd, i) => {
+          const settle = base + ms2f(i * 60, fps);
+          const t = interpolate(frame, [settle, settle + ms2f(200, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.16, 1, 0.3, 1) });
+          if (t <= 0) return null;
+          const cx = x(i), ccol = cd.up ? brand.bull : brand.bear;
+          const yO = y(cd.o), yC = y(cd.c), top = Math.min(yO, yC), bot = Math.max(yO, yC);
+          const mid = (top + bot) / 2, bh = Math.max(3, (bot - top)) * t;
+          return (<g key={i} opacity={t}>
+            <line x1={cx} y1={y(cd.hi)} x2={cx} y2={y(cd.lo)} stroke={ccol} strokeWidth="2" strokeLinecap="round" opacity={0.85} />
+            <rect x={cx - bw / 2} y={mid - bh / 2} width={bw} height={bh} rx="2" fill={ccol} />
+          </g>);
+        })}
+        <line x1={xNew - slot * 0.4} y1={yNew} x2={xNew + slot * 0.4} y2={yNew} stroke={col} strokeWidth="3.5" strokeLinecap="round" opacity={tagT} />
+        {tagT > 0 && <SvgTag cx={xNew} ty={mark === 'high' ? yNew - 42 : yNew + 14} text={confirmed ? 'Confirms' : 'No Confirm'} fill={col} fs={15} maxW={W} />}
+      </svg>
+    </div>
+  );
+}
+function MultiInstrumentSeries({ c, seg, fps, brand, idx }) {
+  const frame = useCurrentFrame();
+  const setKey = SMT_SETS[c.smt_case] ? c.smt_case : (String(c.pattern || c.bias || seg.chart_bias || '').toLowerCase().includes('bull') ? 'bullish_positive' : 'bearish_positive');
+  const spec = SMT_SETS[setKey];
+  const seed = (seg.segment_id || 0) * 7 + (idx || 0);
+  const W = 440, H = 470, padX = 30, padTop = 54, padBot = 44;
+  const base = ms2f(c.enter_at_ms || 150, fps);
+  const n = spec.a.closes.length;
+  const featStart = base + ms2f(60 * n + 160, fps);
+  const tagT = interpolate(frame, [featStart, featStart + ms2f(380, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.34, 1.56, 0.64, 1) });
+  const verdictT = interpolate(frame, [featStart + ms2f(300, fps), featStart + ms2f(650, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.5)) });
+  const labelA = c.instrument_a || 'Instrument A';
+  const labelB = c.instrument_b || (spec.inverse ? 'Instrument B (inverse)' : 'Instrument B');
+  return (
+    <div style={{ width: '100%', maxWidth: 1480, alignSelf: 'center' }}>
+      {c.label && <div style={{ fontFamily: MONOS, fontWeight: 600, fontSize: 30, letterSpacing: '0.06em', textTransform: 'uppercase', color: brand.slate, marginBottom: 12 }}>{c.label}</div>}
+      <div style={{ display: 'flex', gap: 28 }}>
+        <SmtPanel label={labelA} spec={spec.a} seed={seed} role={spec.confirmSide === 'a' ? 'confirm' : 'diverge'} mark={spec.a.mark}
+          W={W} H={H} padX={padX} padTop={padTop} padBot={padBot} base={base} fps={fps} brand={brand} frame={frame} tagT={tagT} />
+        <SmtPanel label={labelB} spec={spec.b} seed={seed + 1} role={spec.divergeSide === 'b' ? 'diverge' : 'confirm'} mark={spec.b.mark}
+          W={W} H={H} padX={padX} padTop={padTop} padBot={padBot} base={base} fps={fps} brand={brand} frame={frame} tagT={tagT} />
+      </div>
+      {verdictT > 0 && (
+        <div style={{ marginTop: 16, textAlign: 'center', transform: `scale(${0.85 + 0.15 * verdictT})`, opacity: verdictT }}>
+          <div style={{ display: 'inline-block', fontFamily: MONOS, fontWeight: 700, fontSize: 22, letterSpacing: '0.06em', color: '#fff',
+            background: brand.accent, borderRadius: 8, padding: '8px 20px' }}>{c.verdict || spec.verdict} — divergence</div>
+        </div>
+      )}
     </div>
   );
 }
