@@ -104,7 +104,48 @@ function drift(frame, fps, ampX = 6, ampY = 4, period = 8) {
   return `translate(${Math.sin(p) * ampX}px, ${Math.cos(p * 0.8) * ampY}px)`;
 }
 
-function resolveCentre(state, scale) {
+// ONE definition of "the source footage is running". ChartLayer, the captions look,
+// the pause cue and the whip all branch on it, and `checkFreezeSeams` in renderer.js
+// mirrors it — two in-file copies is how a cue and the chart end up disagreeing.
+const isPlaying = (s) => (s.canvas_mode || 'graphics') === 'chart_full' && ((s.chart || {}).state !== 'frozen');
+
+// WP5: the two cues the WP3 freeze seam earns — announce the stop, snap on the resume.
+// Both sides must be the SAME chart pausing and restarting: a cut from footage to a
+// graphics scene is a scene change, not a pause, and it must not claim to be one.
+const isFrozenChart = (s) => ((s.chart || {}).state === 'frozen');
+const seamCues = (rawSegs) => rawSegs.map((s, i) => ({
+  pause: i > 0 && isPlaying(rawSegs[i - 1]) && isFrozenChart(s),
+  whip: i > 0 && isFrozenChart(rawSegs[i - 1]) && isPlaying(s),
+}));
+
+// The solver's measured point for a mark id, in canvas px — the same mapping
+// ChartOverlay draws with. The renderer still places nothing itself (label-library
+// STEP2): no measured point for that id means no landmark, and the camera falls
+// back to its anchor.
+function landmarkPoint(overlay, id) {
+  const m = ((overlay && overlay.marks) || []).find((k) => k.id === id);
+  const pt = m && ((m.from && m.from.point) || (m.to && m.to.point));
+  if (!pt) return null;
+  const [x0, y0, x1, y1] = overlay.crop || [0, 0, overlay.W, overlay.H];
+  return [(pt[0] - x0) * (CANVAS_W / Math.max(1, x1 - x0)), (pt[1] - y0) * (CANVAS_H / Math.max(1, y1 - y0))];
+}
+
+function resolveCentre(state, scale, overlay) {
+  // WP5: camera/punch-in to a LANDMARK — put the solver's point at frame centre.
+  // The layer transforms as translate(cx-W/2, cy-H/2) scale(s) about the centre, so a
+  // point p lands at the centre when cx = W/2 - (p - W/2)*s. Clamped to |t| <= (s-1)W/2
+  // so a landmark near an edge pans the chart off-screen and shows background.
+  // Only for scale >= 1: a punch-in is a zoom IN; an inset keeps its anchor.
+  if (state && state.landmark && scale >= 1) {
+    const p = landmarkPoint(overlay, state.landmark);
+    if (p) {
+      const clamp = (v, l) => Math.max(-l, Math.min(l, v));
+      return {
+        cx: CANVAS_W / 2 + clamp(-(p[0] - CANVAS_W / 2) * scale, ((scale - 1) * CANVAS_W) / 2),
+        cy: CANVAS_H / 2 + clamp(-(p[1] - CANVAS_H / 2) * scale, ((scale - 1) * CANVAS_H) / 2),
+      };
+    }
+  }
   if (state && typeof state.x === 'number' && typeof state.y === 'number') return { cx: state.x * CANVAS_W, cy: state.y * CANVAS_H };
   const hw = (scale * CANVAS_W) / 2, hh = (scale * CANVAS_H) / 2, m = INSET_MARGIN;
   const xL = m * CANVAS_W + hw, xR = CANVAS_W - m * CANVAS_W - hw, xC = CANVAS_W / 2;
@@ -126,14 +167,15 @@ function itemFrames(count, segFrames, fps, provided) {
 // Where the chart RESTS in this segment (its settled state), in px.
 function chartFinalBox(seg, cam, mode) {
   if (mode === 'graphics') return null;
+  const ov = (seg.chart || {}).overlay;
   let scale, centre;
   if (cam && cam.to) {
     scale = cam.to.scale ?? (mode === 'chart_full' ? 1 : INSET_SCALE_DEFAULT);
-    centre = resolveCentre(cam.to, scale);
+    centre = resolveCentre(cam.to, scale, ov);
   } else {
     const chart = seg.chart || {};
     scale = mode === 'chart_full' ? 1 : (chart.scale || INSET_SCALE_DEFAULT);
-    centre = resolveCentre({ anchor: chart.anchor }, scale);
+    centre = resolveCentre({ anchor: chart.anchor, landmark: chart.landmark }, scale, ov);
   }
   const w = scale * CANVAS_W, h = scale * CANVAS_H;
   return { left: centre.cx - w / 2, top: centre.cy - h / 2, width: w, height: h, scale };
@@ -200,11 +242,12 @@ export const RepurposeLongForm = ({ sceneJson }) => {
   const assets = sceneJson.assets || null;   // V2: meme/reaction media {name → {url, media_type}}
   const camMap = {}; (sceneJson.camera || []).forEach(c => { camMap[c.segment_id] = c; });
   const layers = carryChartMarks(rawSegs);
+  const cues = seamCues(rawSegs);
   let offset = 0;
   const segs = rawSegs.map((s, i) => {
     const durSec = isLegacy ? (s.type === 'live' ? s.end_time - s.start_time : s.duration) : (s.duration_ms || 3000) / 1000;
     const frameCount = Math.max(1, Math.ceil(durSec * fps));
-    const seg = { ...s, _i: i, frameStart: offset, frameCount, _layer: layers[i] }; offset += frameCount; return seg;
+    const seg = { ...s, _i: i, frameStart: offset, frameCount, _layer: layers[i], _cue: cues[i] }; offset += frameCount; return seg;
   });
   return (
     <AbsoluteFill style={{ overflow: 'hidden', background: brand.background }}>
@@ -295,13 +338,14 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
       {effMode === 'graphics' && <BackgroundTreatment flow={flow} seg={seg} fps={fps} brand={brand} />}
       {showChart && <ChartLayer seg={seg} srcUrl={srcUrl} fps={fps} cam={cam} mode={mode} />}
       {gZone && flow.length > 0 && <GraphicsStack flow={flow} seg={seg} fps={fps} brand={brand} zone={gZone} settleF={settleF} />}
+      {showChart && seg._cue && seg._cue.pause && <PauseCue box={chartBox} fps={fps} />}
       {memes.map((c, i) => <MemeCutaway key={`meme${i}`} c={c} fps={fps} assets={assets} />)}
       <BrandBug brand={brand} />
       {/* WP1: same freeze test ChartLayer uses (`playing`). Source footage running
           → burned karaoke line; frozen chart or graphics-only scene → astronaut. */}
       {seg.captions && seg.captions.length > 0 && (
         <Captions captions={seg.captions} fps={fps} brand={brand}
-          frozen={!(showChart && mode === 'chart_full' && (seg.chart || {}).state !== 'frozen')} />
+          frozen={!(showChart && isPlaying(seg))} />
       )}
       {seg.audio_url && <Audio src={seg.audio_url} />}
       {(seg.sfx || []).map((s, i) => s.url ? (
@@ -2024,6 +2068,29 @@ function ChartOverlay({ overlay, layer, fps, screen }) {
     const a = P(m.from.point), b = P(m.to.point);
     boxes[(m.id || '').split('.')[0]] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
   }
+  // WP5: box-and-dim. The zone this block is about stays lit and the rest of the chart
+  // drops back, so "look HERE" needs no arrow. Only a mark the SOLVER placed can be the
+  // hole — the renderer still positions nothing itself (label-library STEP2).
+  const dimM = marks.find((m) => m.dim && m.from && m.from.point && m.to && m.to.point);
+  let dimEl = null;
+  if (dimM) {
+    const a = P(dimM.from.point), b = P(dimM.to.point), pad = sp(10);
+    const s0 = dimM.at_ms || 0;
+    const dp = dimM._held ? 1 : interpolate(t, [s0, s0 + 520], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+    const mid = `dim-${dimM.id || dimM.label || 'zone'}`;
+    dimEl = (
+      <g>
+        <defs><mask id={mid}>
+          <rect x="0" y="0" width={CANVAS_W} height={CANVAS_H} fill="#FFFFFF" />
+          <rect x={Math.min(a[0], b[0]) - pad} y={Math.min(a[1], b[1]) - pad}
+            width={Math.abs(b[0] - a[0]) + 2 * pad} height={Math.abs(b[1] - a[1]) + 2 * pad}
+            rx={sp(8)} fill="#000000" />
+        </mask></defs>
+        <rect x="0" y="0" width={CANVAS_W} height={CANVAS_H} fill="#0B1E40" opacity={0.58 * dp} mask={`url(#${mid})`} />
+      </g>
+    );
+  }
+
   const shapes = marks.map((m, i) => {
     const st = LABEL_STYLE[m.label] || {};
     const col = markColour(m);
@@ -2076,6 +2143,16 @@ function ChartOverlay({ overlay, layer, fps, screen }) {
           strokeDasharray={2 * Math.PI * ((rx + ry) / 2)} strokeDashoffset={2 * Math.PI * ((rx + ry) / 2) * (1 - p)} />
       );
     }
+    if (m.kind === 'underline') {
+      // WP5: the marker underline — one thick, slightly bowed stroke drawn left→right,
+      // the companion to `ring` (the marker circle). Both need the solver's two points.
+      if (!A || !B) return null;
+      const ex = A[0] + (B[0] - A[0]) * p, ey = A[1] + (B[1] - A[1]) * p;
+      return (
+        <path key={key} fill="none" stroke={col} strokeWidth={sp(9)} strokeLinecap="round" opacity={0.85}
+          d={`M ${A[0]} ${A[1]} Q ${(A[0] + ex) / 2} ${(A[1] + ey) / 2 + sp(8)} ${ex} ${ey}`} />
+      );
+    }
     if (m.kind === 'bracket') {
       if (!A || !B) return null;
       const bx = Math.max(A[0], B[0]) + sp(18), arm = sp(14);
@@ -2097,6 +2174,7 @@ function ChartOverlay({ overlay, layer, fps, screen }) {
         <Img src={overlay.frame_url} style={{ width: '100%', height: '100%' }} />
       </div>
       <svg width={CANVAS_W} height={CANVAS_H} viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`} style={{ position: 'absolute', inset: 0 }}>
+        {dimEl}
         {shapes}
       </svg>
       {tags.map((tg) => (
@@ -2119,15 +2197,41 @@ function arrowHead(A, B, size, col) {
   return <polygon points={`${B[0]},${B[1]} ${p1[0]},${p1[1]} ${p2[0]},${p2[1]}`} fill={col} />;
 }
 
+// WP5: the pause signal. When the footage stops so a concept can be taught, say so —
+// an unannounced freeze reads as a stall or a buffering video, not a deliberate beat.
+// Screen-level (positioned over the settled chart box) so it does not shrink with an inset.
+function PauseCue({ box, fps }) {
+  const frame = useCurrentFrame();
+  const holdF = ms2f(1600, fps);
+  const p = interpolate(frame, [0, ms2f(260, fps)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.back(1.6)) });
+  const o = interpolate(frame, [holdF, holdF + ms2f(340, fps)], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  if (o <= 0) return null;
+  const s = Math.max(0.5, box ? box.scale : 1);
+  const bar = { width: 7 * s, height: 26 * s, background: '#FFFFFF', display: 'block', borderRadius: 2 * s };
+  return (
+    <div style={{
+      position: 'absolute', left: (box ? box.left : 0) + 26 * s, top: (box ? box.top : 0) + 26 * s,
+      opacity: o, transform: `scale(${p})`, transformOrigin: 'left top',
+      display: 'flex', alignItems: 'center', gap: 12 * s, background: 'rgba(11,30,64,0.88)',
+      color: '#FFFFFF', borderRadius: 10 * s, padding: `${9 * s}px ${16 * s}px`,
+      fontFamily: SANS, fontWeight: 800, fontSize: 27 * s, letterSpacing: 1.5,
+    }}>
+      <span style={{ display: 'inline-flex', gap: 5 * s }}><i style={bar} /><i style={bar} /></span>
+      PAUSED
+    </div>
+  );
+}
+
 function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
   const frame = useCurrentFrame();
   const chart = seg.chart || {};
+  const ov = chart.overlay;
   let scale, cx, cy;
   if (cam && cam.from && cam.to) {
     const dur = Math.min(ms2f(cam.duration_ms || 700, fps), seg.frameCount);
     const t = interpolate(frame, [0, dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.cubic) });
     const sFrom = cam.from.scale ?? INSET_SCALE_DEFAULT, sTo = cam.to.scale ?? 1;
-    const from = resolveCentre(cam.from, sFrom), to = resolveCentre(cam.to, sTo);
+    const from = resolveCentre(cam.from, sFrom, ov), to = resolveCentre(cam.to, sTo, ov);
     scale = sFrom + (sTo - sFrom) * t; cx = from.cx + (to.cx - from.cx) * t; cy = from.cy + (to.cy - from.cy) * t;
   } else if (mode === 'chart_full') {
     // #5: play full, then at clip end zoom OUT to the inset (no long full-screen freeze).
@@ -2138,14 +2242,22 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
     cx = CANVAS_W/2 + (toC.cx - CANVAS_W/2) * zt;
     cy = CANVAS_H/2 + (toC.cy - CANVAS_H/2) * zt;
   }
-  else { const s = chart.scale || INSET_SCALE_DEFAULT; const c = resolveCentre({ anchor: chart.anchor }, s); scale = s; cx = c.cx; cy = c.cy; }
+  else { const s = chart.scale || INSET_SCALE_DEFAULT; const c = resolveCentre({ anchor: chart.anchor, landmark: chart.landmark }, s, ov); scale = s; cx = c.cx; cy = c.cy; }
 
-  const playing = mode === 'chart_full' && chart.state !== 'frozen';
+  const playing = isPlaying(seg);
+  // WP5: whip on resume. Footage restarting after a teach block gets a fast lateral
+  // snap + blur, so the cut back reads as "play" rather than as a jump in the source.
+  const whipF = playing && seg._cue && seg._cue.whip ? Math.max(2, ms2f(240, fps)) : 0;
+  const wp = whipF ? interpolate(frame, [0, whipF], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) }) : 0;
+  // WP5: 1.5x on playing stretches — the Motion Director sends `chart.rate`. The SAME
+  // source range (play_from..play_to) is covered in less time; the C5 Freeze below then
+  // holds play_to for the remainder, so the freeze seam WP3 validates is untouched.
+  const rate = Math.max(0.5, Math.min(3, chart.rate || 1));
   const inset = scale < 0.95;
   // Ken Burns drift on the frozen inset (cinematic, not flat)
   const kb = (!playing && inset) ? 1 + 0.03 * (interpolate(frame, [0, seg.frameCount], [0, 1], { extrapolateRight: 'clamp' })) : 1;
   return (
-    <AbsoluteFill style={{ transform: transformStr(scale, cx, cy), transformOrigin: 'center center' }}>
+    <AbsoluteFill style={{ transform: transformStr(scale, cx + wp * CANVAS_W * 0.16, cy), transformOrigin: 'center center', filter: wp > 0.01 ? `blur(${(wp * 16).toFixed(1)}px)` : undefined }}>
       <AbsoluteFill style={{ borderRadius: inset ? 20 : 0, overflow: 'hidden', boxShadow: inset ? '0 20px 60px rgba(11,30,64,0.25)' : 'none', border: inset ? '2px solid #14315F' : 'none', background: '#FFFFFF' }}>
         <AbsoluteFill style={{ transform: `scale(${kb})` }}>
           {playing ? (
@@ -2154,8 +2266,8 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
               <Freeze frame={ms2f((chart.play_to||0)*1000, fps)}>
                 <Video src={srcUrl} muted objectFit="contain" style={fillVid} />
               </Freeze>
-              <Sequence from={0} durationInFrames={Math.max(1, ms2f(((chart.play_to||0)-(chart.play_from||0))*1000, fps))}>
-                <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} muted objectFit="contain" style={fillVid} />
+              <Sequence from={0} durationInFrames={Math.max(1, Math.round(ms2f(((chart.play_to||0)-(chart.play_from||0))*1000, fps) / rate))}>
+                <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} playbackRate={rate} muted objectFit="contain" style={fillVid} />
               </Sequence>
             </AbsoluteFill>
           ) : chart.overlay && chart.overlay.frame_url ? (
