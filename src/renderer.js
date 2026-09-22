@@ -301,6 +301,47 @@ function normalizeNarratorAudio(sceneJson) {
 }
 
 // ── Main render function ───────────────────────────────────────────────────
+// ── WP3: the mid-segment freeze seam ──────────────────────────────────────
+// `chart.state` is a whole-SEGMENT property, so the format's freeze → teach →
+// unfreeze beat has to be cut into two segments. ChartLayer holds the frame at
+// `play_to` when a playing segment runs out of clip (its C5 `<Freeze>`), so the
+// frozen segment that follows must show that exact same moment — otherwise the
+// chart visibly jumps at the seam and the "one chart, never reset" premise dies.
+//
+// Rejected here rather than rendered: a jump is invisible in the JSON and obvious
+// in the mp4, and a proof render costs minutes. Scope is deliberately the one seam
+// the plan names (play → freeze); a frozen → play or play → play discontinuity can
+// be a deliberate jump-cut in the source, so it is not our call to refuse.
+const SEAM_TOL_S = 1 / 60;   // half a frame at 30fps — under one frame nothing is visible
+
+// The source moment a FROZEN segment puts on screen: `freeze_at`, or the timestamp
+// of the solved still when the plan marks the chart through `chart.overlay`.
+function chartShownAt(chart) {
+  if (chart.freeze_at != null) return chart.freeze_at;
+  const ov = chart.overlay;
+  return ov && ov.frame_s != null ? ov.frame_s : null;
+}
+
+// Asserts PER SEAM and reports every one, never just the first — a single bad seam
+// fixed at a time costs a pipeline run each.
+function checkFreezeSeams(timeline) {
+  const bad = [];
+  for (let i = 1; i < (timeline || []).length; i++) {
+    const prev = timeline[i - 1], cur = timeline[i];
+    const pc = prev.chart, cc = cur.chart;
+    if (!pc || !cc) continue;
+    const played = (prev.canvas_mode === 'chart_full') && pc.state !== 'frozen' && pc.play_to != null;
+    if (!played || cc.state !== 'frozen') continue;
+    const at = chartShownAt(cc);
+    if (at == null) {
+      bad.push(`seg ${cur.segment_id ?? i}: frozen after a clip ending at ${pc.play_to}s but declares no freeze_at`);
+    } else if (Math.abs(at - pc.play_to) > SEAM_TOL_S) {
+      bad.push(`seg ${cur.segment_id ?? i}: freeze_at ${at}s != previous seg ${prev.segment_id ?? i - 1} play_to ${pc.play_to}s`);
+    }
+  }
+  return bad;
+}
+
 async function renderScene(sceneJson) {
   const bp   = await getBundle();
   const spec = getCompositionSpec(sceneJson);
@@ -311,6 +352,18 @@ async function renderScene(sceneJson) {
   // All other render types pass through unchanged.
   let activeSceneJson = sceneJson;
   let cleanupDir      = null;
+
+  // WP3 seam check first — before the base64 payload is decoded to disk, so a plan
+  // with a jumping chart fails in milliseconds instead of after the file setup.
+  if (sceneJson.render_type === 'REPURPOSE_LONG_FORM') {
+    const seams = checkFreezeSeams(sceneJson.timeline);
+    if (seams.length) {
+      throw new Error(
+        `[renderer] freeze seam mismatch (${seams.length}) — a frozen segment must show the ` +
+        `frame the previous clip ended on:\n  ${seams.join('\n  ')}`
+      );
+    }
+  }
 
   if (
     sceneJson.render_type === 'REPURPOSE_SCENE' ||
@@ -556,4 +609,4 @@ async function renderVideo(payload) {
   return buffer;
 }
 
-module.exports = { renderScene, renderVideo };
+module.exports = { renderScene, renderVideo, checkFreezeSeams };
