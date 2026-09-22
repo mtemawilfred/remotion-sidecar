@@ -354,7 +354,8 @@ const MEME_TYPES = ['meme_cutaway', 'meme', 'reaction_clip', 'asset_flash'];
 
 // motion-graphic (non-text) primitive types — used by the hook guard to suppress
 // candle_cluster injection when a real visual component is already present.
-const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'countdown', 'fvg', 'structure_break', 'trade_plan',
+const GRAPHIC_TYPES = ['concept_block', 'concept_primer', 'teach_block', 'explainer_block', 'primer_card',
+  'chart_concept', 'candle_cluster', 'zone_box', 'liquidity_run', 'flow_steps', 'arrow', 'diagram', 'crowd', 'countdown', 'fvg', 'structure_break', 'trade_plan',
   'multi_instrument_series', 'smt_divergence', 'correlated_pair_chart', 'two_chart_comparison',
   'hook_title', 'animated_title', 'title_card', 'chart_thumbnail_flash',
   'myth_buster', 'myth_vs_reality', 'misconception', 'debunk',
@@ -366,6 +367,8 @@ const GRAPHIC_TYPES = ['chart_concept', 'candle_cluster', 'zone_box', 'liquidity
   'rr_card', 'risk_reward_card', 'rr_display', 'reward_risk'];
 
 // rough intrinsic heights (px) so the stack can auto-fit without DOM measurement
+const CB_TYPES = ['concept_block', 'concept_primer', 'teach_block', 'explainer_block', 'primer_card'];
+
 function estHeight(c) {
   if (c.type === 'roadmap' || c.type === 'concept_list') { const n = (c.items || c.rows || []).length || 3; return 50 + n * 70; }
   if (c.type === 'table') { const n = (c.rows || []).length || 3; return n * 62; }
@@ -390,6 +393,7 @@ function estHeight(c) {
     rr_card: 340, risk_reward_card: 340, rr_display: 340, reward_risk: 340,
     social_proof: 320, trust_card: 320, join_card: 320, community_card: 320,
     timer_bar: 260, progress_reveal: 260, countdown_bar: 260, tension_bar: 260,
+    concept_block: 620, concept_primer: 620, teach_block: 620, explainer_block: 620, primer_card: 620,
     outro_cta: 280, cta_card: 280, cta: 280,
   };
   return H[c.type] || 150;
@@ -405,6 +409,14 @@ function measuredHeight(c, width) {
     if (c.type === 'countdown') return 240;
     const avail = Math.max(220, width - 100);
     const lines = (text, fs, fw) => text ? Math.max(1, Math.ceil(measureText({ text: String(text), fontFamily: POPPINS, fontSize: fs, fontWeight: fw }).width / avail)) : 0;
+    // WP4: a composite measures as its parts, and its diagram measures as whatever
+    // component actually draws it — so the fit-scale sees the real block, not a guess.
+    if (CB_TYPES.includes(c.type)) {
+      const dia = c.diagram_url ? Math.round(width * 0.52)
+        : (c.diagram && c.diagram.type !== 'concept_block') ? measuredHeight(c.diagram, width) : 0;
+      return (c.term ? 60 : 0) + lines(c.plain, 46, '700') * 56
+        + (c.analogy ? 76 + lines(c.analogy, 38, '500') * 48 : 0) + dia + 60;
+    }
     if (c.type === 'concept_card') return 84 + lines(c.title, 56, '700') * 66 + (c.title && c.body ? 18 : 0) + lines(c.body, 40, '400') * 56;
     if (c.type === 'callback_card') return 68 + 48 + lines(c.title, 50, '700') * 60 + lines(c.body, 38, '400') * 53;
     if (c.type === 'heading') { const fs = 96; return lines(c.title || c.primary, Math.min(fs, 96), '900') * 70 + ((c.subtitle || c.secondary) ? 60 : 0); }
@@ -509,6 +521,11 @@ function FlowComponent({ c, idx, seg, fps, brand, zoneW }) {
     case 'summary_card':
     case 'green_card':
     case 'success_point':             return <KeyTakeaway {...p} />;
+    case 'concept_block':
+    case 'concept_primer':
+    case 'teach_block':
+    case 'explainer_block':
+    case 'primer_card':               return <ConceptBlock {...p} />;
     case 'myth_buster':
     case 'myth_vs_reality':
     case 'misconception':
@@ -1499,6 +1516,63 @@ function KeyTakeaway({ c, fps, brand, kind, durMs }) {
 }
 
 // 5. MythBuster — myth slides in (red + animated strikethrough) then reality reveals (green)
+// ── WP4: the concept block ──────────────────────────────────────────────────
+// The teach beat of the beginner-explainer format: the chart freezes, ONE block
+// fires, the chart unfreezes with the mark left on it. Four parts —
+//   term    the gold key-term chip (the approved "term lock-in" edit)
+//   plain   one plain-English sentence, no jargon
+//   analogy the Owner's canonical analogy for this concept
+//   diagram a 2D schematic
+// — and they are ONE component on purpose. `_maxFlow` (`:244`) caps a non-hook
+// segment at 3 focal points and a concept block wants four elements; the plan's
+// ruling is that the cap is what stops the frame becoming a wall, so the block
+// is composed, not exempted. It occupies exactly one slot.
+//
+// The diagram slot draws NOTHING new: it is either a Concept Library asset
+// (`diagram_url`, once that stage exists) or any existing registry component
+// spec (`diagram: {type:'zone_box', ...}`), rendered through FlowComponent. A
+// nested concept_block is refused — a block inside a block is not a diagram.
+//
+// Parts appear in reading order with a real gap between them, because the
+// voiceover is speaking each one. `stagger_ms` overrides the default pacing.
+const CB_STEPS = [0, 700, 1500, 2400];
+
+function ConceptBlock({ c, idx, seg, fps, brand, zoneW }) {
+  const frame = useCurrentFrame();
+  const base = c.enter_at_ms || 150;
+  const step = c.stagger_ms || CB_STEPS;
+  const at = (i) => entrance(i === 0 ? 'pop' : 'rise', frame, ms2f(base + (step[i] ?? CB_STEPS[i]), fps), fps, i === 0 ? 420 : 460);
+  const dia = (c.diagram && c.diagram.type !== 'concept_block') ? c.diagram : null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {c.term && (
+        <div style={{ ...at(0), alignSelf: 'flex-start', background: brand.accent, color: '#FFFFFF', borderRadius: 10,
+          padding: '8px 20px', fontFamily: MONOS, fontSize: 24, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase' }}>
+          {c.term}
+        </div>
+      )}
+      {c.plain && (
+        <div style={{ ...at(1), fontFamily: SANS, fontWeight: 700, fontSize: 46, lineHeight: 1.18, color: brand.ink }}>
+          {c.plain}
+        </div>
+      )}
+      {c.analogy && (
+        <div style={{ ...at(2), background: brand.panel, borderLeft: `6px solid ${brand.accent}`, borderRadius: '0 14px 14px 0', padding: '22px 28px' }}>
+          <div style={{ fontFamily: MONOS, fontSize: 20, fontWeight: 700, color: brand.slate, letterSpacing: '0.08em', marginBottom: 8 }}>LIKE THIS</div>
+          <div style={{ fontFamily: SANS, fontWeight: 500, fontSize: 38, lineHeight: 1.25, color: brand.primary }}>{c.analogy}</div>
+        </div>
+      )}
+      {c.diagram_url ? (
+        <div style={{ ...at(3) }}><Img src={c.diagram_url} style={{ width: '100%', objectFit: 'contain' }} /></div>
+      ) : dia ? (
+        <div style={{ ...at(3) }}>
+          <FlowComponent c={{ ...dia, enter_at_ms: base + (step[3] ?? CB_STEPS[3]) }} idx={idx + 1} seg={seg} fps={fps} brand={brand} zoneW={zoneW} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MythBuster({ c, fps, brand }) {
   const frame = useCurrentFrame();
   const base = ms2f(c.enter_at_ms || 150, fps);
