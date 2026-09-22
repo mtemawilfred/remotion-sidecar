@@ -158,6 +158,28 @@ function graphicsZone(mode, chartBox) {
   return { left: MARGIN, top: TOP, width: CANVAS_W - 2 * MARGIN, height: Math.max(180, bottom - TOP) };
 }
 
+// ── WP2: chart marks PERSIST across segments ────────────────────────────────
+// A mark is anchored in FRAME pixels of one frozen still, so it stays true only
+// while the chart is showing that same still. Key on the still (`frame_id`, else
+// `frame_s`); when the still changes the stack resets and the solver re-anchors
+// there — the renderer never moves a mark it was not given a point for
+// (label-library STEP2: "no anchor logic in Remotion").
+const markKey = (m) => m.id || JSON.stringify([m.label, m.kind, m.from && m.from.point, m.to && m.to.point]);
+
+function carryChartMarks(rawSegs) {
+  const out = []; let key, stack = [];
+  for (const s of rawSegs) {
+    const ov = s.chart && s.chart.overlay;
+    if (!ov) { out.push([]); continue; }              // no overlay (or fetch dropped it) — carries nothing, breaks nothing
+    const k = ov.frame_id ?? ov.frame_s;
+    if (k === undefined || k === null || k !== key) { key = k; stack = []; }
+    out.push(stack.slice());
+    const seen = new Set(stack.map(markKey));
+    for (const m of ov.marks || []) if (!seen.has(markKey(m))) { seen.add(markKey(m)); stack.push(m); }
+  }
+  return out;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 export const RepurposeLongForm = ({ sceneJson }) => {
   const { fps } = useVideoConfig();
@@ -167,11 +189,12 @@ export const RepurposeLongForm = ({ sceneJson }) => {
   const srcUrl = sceneJson.source_video_url, bgmUrl = sceneJson.bg_music_url;
   const assets = sceneJson.assets || null;   // V2: meme/reaction media {name → {url, media_type}}
   const camMap = {}; (sceneJson.camera || []).forEach(c => { camMap[c.segment_id] = c; });
+  const carried = carryChartMarks(rawSegs);
   let offset = 0;
   const segs = rawSegs.map((s, i) => {
     const durSec = isLegacy ? (s.type === 'live' ? s.end_time - s.start_time : s.duration) : (s.duration_ms || 3000) / 1000;
     const frameCount = Math.max(1, Math.ceil(durSec * fps));
-    const seg = { ...s, _i: i, frameStart: offset, frameCount }; offset += frameCount; return seg;
+    const seg = { ...s, _i: i, frameStart: offset, frameCount, _carried: carried[i] }; offset += frameCount; return seg;
   });
   return (
     <AbsoluteFill style={{ overflow: 'hidden', background: brand.background }}>
@@ -1877,7 +1900,7 @@ function markColour(m) {
   return st.colour || INK;
 }
 
-function ChartOverlay({ overlay, fps, screen }) {
+function ChartOverlay({ overlay, carried, fps, screen }) {
   const frame = useCurrentFrame();
   const t = (frame / fps) * 1000;
   const [x0, y0, x1, y1] = overlay.crop || [0, 0, overlay.W, overlay.H];
@@ -1887,8 +1910,18 @@ function ChartOverlay({ overlay, fps, screen }) {
   const inCrop = (pt) => pt && pt[0] >= x0 - 1 && pt[0] <= x1 + 1 && pt[1] >= y0 - 1 && pt[1] <= y1 + 1;
   const sp = (v) => v / screen;                  // desired SCREEN px → canvas px at the live inset scale
 
+  // WP2: marks carried from earlier segments on this SAME frozen still are drawn
+  // already-complete (`_held`) — the layer accumulates, it never replays. Anything
+  // this segment re-declares is dropped in favour of the held copy, so a mark can
+  // never double-draw at a seam.
+  const heldKeys = new Set((carried || []).map(markKey));
+  const all = [
+    ...(carried || []).map((m) => ({ ...m, _held: true })),
+    ...(overlay.marks || []).filter((m) => !heldKeys.has(markKey(m))),
+  ];
+
   // fail closed: a mark whose anchor is missing or outside the crop is skipped.
-  const marks = (overlay.marks || []).filter((m) => {
+  const marks = all.filter((m) => {
     const a = m.from && m.from.point, b = m.to && m.to.point;
     if (!a && !b) return false;
     if (a && !inCrop(a)) return false;
@@ -1909,7 +1942,7 @@ function ChartOverlay({ overlay, fps, screen }) {
     const col = markColour(m);
     const start = (m.at_ms || 0) + (m.stagger || 0) * 90;
     const dur = st.slow ? 900 : 520;             // dashed/expected marks draw slower (approved motion)
-    const p = interpolate(t, [start, start + dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+    const p = m._held ? 1 : interpolate(t, [start, start + dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
     if (p <= 0) return null;
     const w = sp(3);
     const dashArr = st.dash === 'dot' ? `${sp(2)} ${sp(6)}` : st.dash === 'dash' ? `${sp(12)} ${sp(9)}` : undefined;
@@ -1949,7 +1982,7 @@ function ChartOverlay({ overlay, fps, screen }) {
     }
     if (m.kind === 'ring') {
       const at = B || A;
-      const pulse = 1 + 0.06 * Math.sin(Math.max(0, t - start - dur) / 120);
+      const pulse = m._held ? 1 : 1 + 0.06 * Math.sin(Math.max(0, t - start - dur) / 120);
       const rx = sp(m.label === 'candle_highlight' ? 26 : 18) * pulse, ry = sp(24) * pulse;
       return (
         <ellipse key={key} cx={at[0]} cy={at[1]} rx={rx} ry={ry} fill="none" stroke={col} strokeWidth={w}
@@ -2039,7 +2072,7 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
               </Sequence>
             </AbsoluteFill>
           ) : chart.overlay && chart.overlay.frame_url ? (
-            <ChartOverlay overlay={chart.overlay} fps={fps} screen={scale * kb} />
+            <ChartOverlay overlay={chart.overlay} carried={seg._carried} fps={fps} screen={scale * kb} />
           ) : chart.freeze_frame_url ? (
             <Img src={chart.freeze_frame_url} style={fill} />
           ) : (
