@@ -22,6 +22,7 @@ import { Video, Audio } from '@remotion/media';
 import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
 import { loadFont as loadJetBrainsMono } from '@remotion/google-fonts/JetBrainsMono';
 import { fitText, measureText } from '@remotion/layout-utils';
+import { staticFile } from 'remotion';
 import { scaleLinear } from 'd3';
 
 // Load ONLY the weights/subset we actually use. Default loadFont() pulls every
@@ -263,7 +264,12 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
       {gZone && flow.length > 0 && <GraphicsStack flow={flow} seg={seg} fps={fps} brand={brand} zone={gZone} settleF={settleF} />}
       {memes.map((c, i) => <MemeCutaway key={`meme${i}`} c={c} fps={fps} assets={assets} />)}
       <BrandBug brand={brand} />
-      {seg.captions && seg.captions.length > 0 && <Captions captions={seg.captions} fps={fps} brand={brand} />}
+      {/* WP1: same freeze test ChartLayer uses (`playing`). Source footage running
+          → burned karaoke line; frozen chart or graphics-only scene → astronaut. */}
+      {seg.captions && seg.captions.length > 0 && (
+        <Captions captions={seg.captions} fps={fps} brand={brand}
+          frozen={!(showChart && mode === 'chart_full' && (seg.chart || {}).state !== 'frozen')} />
+      )}
       {seg.audio_url && <Audio src={seg.audio_url} />}
       {(seg.sfx || []).map((s, i) => s.url ? (
         <Sequence key={`sfx${i}`} from={ms2f(s.at_ms, fps)} layout="none"><Audio src={s.url} volume={s.gain ?? 0.6} /></Sequence>
@@ -2045,16 +2051,28 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
   );
 }
 
-// ── Captions: ~6-word chunks, stroke for legibility, keyword highlight sweep ──
-function Captions({ captions, fps, brand }) {
-  const frame = useCurrentFrame();
-  const sec = frame / fps;
+// ── Caption chunking — ONE definition, shared by both caption looks ──────────
+// Owner ruling (beginner-explainer design v4): NO word cap. The bubble never
+// shortens caption text to fit; same chunk count and same word timings as the
+// burned line. Break at [.,!?;] once >=3 words, else every 6.
+function captionChunks(captions) {
   const chunks = []; let cur = [];
   captions.forEach(cap => { cur.push(cap); const brk = /[.,!?;]$/.test(cap.word); if ((brk && cur.length >= 3) || cur.length >= 6) { chunks.push(cur); cur = []; } });
   if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
+// ── Captions: burned karaoke line while the clip PLAYS; talking-astronaut ────
+// bubble while the chart is FROZEN (WP1). `frozen` defaults false so every
+// legacy/unaudited call site keeps exactly its current behaviour.
+function Captions({ captions, fps, brand, frozen = false }) {
+  const frame = useCurrentFrame();
+  const sec = frame / fps;
+  const chunks = captionChunks(captions);
   let active = 0; chunks.forEach((ch, i) => { if (sec >= ch[0].start) active = i; });
   const chunk = chunks[active] || [];
   if (!captions.length || sec < captions[0].start) return null;
+  if (frozen) return <TalkingCaptions captions={captions} chunks={chunks} active={active} sec={sec} fps={fps} brand={brand} />;
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>
       <div style={{ position: 'absolute', bottom: 56, left: 96, right: 96, display: 'flex', justifyContent: 'center' }}>
@@ -2073,6 +2091,89 @@ function Captions({ captions, fps, brand }) {
               </span>
             );
           })}
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+// ── TalkingCaptions (WP1) ────────────────────────────────────────────────────
+// The approved short-form build (artifact 70183e1f-dc47-45ec-9ef0-98e40647ba01),
+// ported to 1920×1080. Round PipsGravity avatar + comic speech bubble; words pop
+// in one at a time as spoken. Shown only while the chart is frozen — over playing
+// footage the burned karaoke line stays.
+//
+// Two deliberate departures from the 1080×1920 source, both forced by the frame:
+//  1. Every dimension is scaled by frame HEIGHT (CAP_K), per the build plan.
+//  2. The bubble hugs its text (auto width, capped) instead of flex:1. At 1920
+//     wide a full-width bubble would be ~3× wider than a 6-word line and read as
+//     an empty slab; in the portrait original flex:1 already produced a snug box.
+//  Fonts use this composition's loaded Poppins, NOT brand.font_body ('Inter') —
+//  long form never loads Inter/Oswald, so naming them would fall back to Arial.
+//
+// NO word cap, NO character cap, NO fixed bubble height, NO overflow:hidden.
+// The bubble grows to its line. Truncating caption text is forbidden (Owner v4).
+const CAP_K = CANVAS_H / 1920;            // approved spec is 1080×1920 — scale by height
+const CAP_AVATAR = Math.round(240 * CAP_K);
+const CAP_INK = '#13213A';
+const _c01 = (x) => Math.min(1, Math.max(0, x));
+// back-out overshoot, 0→1 with a small bounce past 1
+const _pop = (p) => { p = _c01(p); const k = 1.9; return 1 + (k + 1) * (p - 1) ** 3 + k * (p - 1) ** 2; };
+
+function TalkingCaptions({ captions, chunks, active, sec, fps, brand }) {
+  const gold = brand.accent || '#C9A84C';
+  const line = chunks[active] || [];
+  const right = active % 2 === 1;                       // lines alternate left/right
+  const sinceFirst = (sec - captions[0].start) * fps;   // avatar clock — pops once
+  const sinceLine  = (sec - line[0].start) * fps;       // bubble clock — re-pops per line
+  const bubbleF    = active === 0 ? sinceLine - 3 : sinceLine;  // first bubble waits for the avatar
+
+  // avatar bobs up on each spoken word
+  let bob = 0;
+  line.forEach(c => { const d = (sec - c.start) * fps; if (d >= 0 && d < 5) bob = Math.max(bob, 1 - d / 5); });
+
+  return (
+    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', left: 96, right: 96, bottom: 56, display: 'flex',
+        flexDirection: right ? 'row-reverse' : 'row', alignItems: 'flex-end',
+        justifyContent: 'flex-start', gap: 26 * CAP_K }}>
+        <Img
+          src={staticFile('assets/avatar/profile_picture.jpg')}
+          style={{ flex: 'none', width: CAP_AVATAR, height: CAP_AVATAR, borderRadius: '50%', background: '#FFFFFF',
+            border: `${8 * CAP_K}px solid ${gold}`,
+            boxShadow: `0 0 0 ${6 * CAP_K}px ${CAP_INK}, 0 ${12 * CAP_K}px ${30 * CAP_K}px rgba(0,0,0,.35)`,
+            transform: `scale(${_pop(sinceFirst / 9)}) translateY(${-10 * CAP_K * bob}px)` }}
+        />
+        <div style={{ position: 'relative', flex: '0 1 auto', maxWidth: '62%', background: '#FFFFFF',
+          border: `${6 * CAP_K}px solid ${CAP_INK}`, borderRadius: 44 * CAP_K,
+          padding: `${44 * CAP_K}px ${46 * CAP_K}px ${40 * CAP_K}px`,
+          boxShadow: `0 ${12 * CAP_K}px ${30 * CAP_K}px rgba(0,0,0,.28)`,
+          opacity: _c01(bubbleF / 4),
+          transform: `scale(${0.4 + 0.6 * _pop(bubbleF / 9)})`,
+          transformOrigin: right ? '100% 100%' : '0 100%' }}>
+          {/* tail pointing at the avatar */}
+          <div style={{ position: 'absolute', bottom: 34 * CAP_K, [right ? 'right' : 'left']: -30 * CAP_K,
+            width: 44 * CAP_K, height: 44 * CAP_K, background: '#FFFFFF',
+            borderBottom: `${6 * CAP_K}px solid ${CAP_INK}`,
+            [right ? 'borderRight' : 'borderLeft']: `${6 * CAP_K}px solid ${CAP_INK}`,
+            transform: right ? 'skewY(28deg) rotate(-18deg)' : 'skewY(-28deg) rotate(18deg)' }} />
+          {/* name tag */}
+          <div style={{ position: 'absolute', top: -30 * CAP_K, [right ? 'right' : 'left']: 40 * CAP_K,
+            background: CAP_INK, color: gold, fontFamily: SANS, fontSize: 30 * CAP_K, fontWeight: 700,
+            lineHeight: 1, letterSpacing: 3 * CAP_K, padding: `${12 * CAP_K}px ${22 * CAP_K}px`,
+            borderRadius: 12 * CAP_K, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>PipsGravity</div>
+          <div style={{ fontFamily: SANS, fontSize: 58 * CAP_K, fontWeight: 800, lineHeight: 1.3, color: CAP_INK }}>
+            {line.map((cap, i) => {
+              const w = (sec - cap.start) * fps;   // frames since this word was spoken
+              return (
+                <span key={i} style={{ display: 'inline-block', marginRight: '0.26em',
+                  opacity: _c01(w / 3),
+                  transform: `translateY(${(1 - _c01(w / 5)) * 18 * CAP_K}px) scale(${0.7 + 0.3 * _pop(w / 6)})` }}>
+                  {cap.word}
+                </span>
+              );
+            })}
+          </div>
         </div>
       </div>
     </AbsoluteFill>
