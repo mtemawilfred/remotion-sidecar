@@ -18,6 +18,7 @@ import { SceneComposer }      from '../components/SceneComposer';
 import { ChartScene }         from '../components/chart/ChartScene';
 import { RepurposeScene }     from '../components/RepurposeScene';
 import { RepurposeLongForm }  from '../components/RepurposeLongForm';
+import { PGPresentation }     from '../components/PGPresentation';
 import { VideoComposer }      from '../components/video/VideoComposer';
 import { VideoComposerV2 }    from '../components/video/VideoComposerV2';
 
@@ -304,6 +305,19 @@ export const RemotionRoot = () => {
         fps={30}
         durationInFrames={300}
         defaultProps={{ sceneJson: DEFAULT_REPURPOSE_LONG_FORM }}
+      />
+
+      {/* ── PGPresentation: PipsGravity "Play, Hold, Mark" long-form (1920×1080 @ 30fps).
+          Props = overlay/render-props.mjs output; durationInFrames comes from the props. */}
+      <Composition
+        id="PGPresentation"
+        component={PGPresentation}
+        width={1920}
+        height={1080}
+        fps={30}
+        durationInFrames={300}
+        defaultProps={{ fps: 30, durationInFrames: 300, src: { w: 702, h: 396 }, video: 'src.mp4', audio: 'voice.wav', beats: [], captions: [], chapters: [] }}
+        calculateMetadata={({ props }) => ({ durationInFrames: props.durationInFrames || 300, fps: props.fps || 30 })}
       />
 
       {/* ── Composition 6: VideoComposer ──────────────────────────────────

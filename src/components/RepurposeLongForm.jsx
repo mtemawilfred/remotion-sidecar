@@ -9,7 +9,7 @@
 //   • stat_callout gets a visual (fill bar) + tabular-nums.
 //   • Dropped AI tells: callback left-stripe → top chip; roadmap identical grid
 //     → alternating offsets + ghost index.
-//   • Captions tightened (~6 words) + text stroke for legibility over the chart.
+//   • Captions run to the end of the sentence (long form) + text stroke for legibility.
 //   • Soft fade-in per segment (over the persistent world) — no hard jump-cuts.
 //   • Ken Burns drift on the frozen chart inset.
 //   • Weight contrast (900 display / 400 body), tighter display tracking.
@@ -113,6 +113,14 @@ const isPlaying = (s) => (s.canvas_mode || 'graphics') === 'chart_full' && ((s.c
 // Both sides must be the SAME chart pausing and restarting: a cut from footage to a
 // graphics scene is a scene change, not a pause, and it must not claim to be one.
 const isFrozenChart = (s) => ((s.chart || {}).state === 'frozen');
+
+// Owner ruling 2026-09-22: the MARKED chart is the lesson — it is the teacher, not an
+// illustration beside one. A chart carrying marks is taught FULL SCREEN and nothing
+// competes with it: no 0.42 corner card, no graphics column, no camera pull-back.
+// (Job pg_20260922_n453ua rendered both of its marked segments at scale 0.42 in
+// center_right while component cards took the frame.) graphicsZone() drops its column
+// on its own once the chart reads scale >= 0.95.
+const isTaughtChart = (s) => (((s.chart || {}).overlay || {}).marks || []).length > 0;
 const seamCues = (rawSegs) => rawSegs.map((s, i) => ({
   pause: i > 0 && isPlaying(rawSegs[i - 1]) && isFrozenChart(s),
   whip: i > 0 && isFrozenChart(rawSegs[i - 1]) && isPlaying(s),
@@ -169,13 +177,22 @@ function chartFinalBox(seg, cam, mode) {
   if (mode === 'graphics') return null;
   const ov = (seg.chart || {}).overlay;
   let scale, centre;
-  if (cam && cam.to) {
+  if (isTaughtChart(seg)) { scale = 1; centre = { cx: CANVAS_W / 2, cy: CANVAS_H / 2 }; }
+  else if (cam && cam.to) {
     scale = cam.to.scale ?? (mode === 'chart_full' ? 1 : INSET_SCALE_DEFAULT);
     centre = resolveCentre(cam.to, scale, ov);
   } else {
     const chart = seg.chart || {};
-    scale = mode === 'chart_full' ? 1 : (chart.scale || INSET_SCALE_DEFAULT);
-    centre = resolveCentre({ anchor: chart.anchor, landmark: chart.landmark }, scale, ov);
+    // chart_full PLAYS full-frame, then ChartLayer (#5) zooms out to the inset and
+    // freezes there for the rest of the segment. The clip is short (3-11s) and the
+    // segment is long (19-31s), so the inset IS this segment's final box. Returning
+    // scale 1 here made graphicsZone() hit its "chart fills frame -> no graphics"
+    // rule and drop every component for the WHOLE segment (74 components / 161s of
+    // empty white card across the 8 chart_full segments of job pg_20260922_n453ua).
+    scale = mode === 'chart_full' ? INSET_SCALE_DEFAULT : (chart.scale || INSET_SCALE_DEFAULT);
+    centre = mode === 'chart_full'
+      ? resolveCentre({ anchor: 'center_right' }, scale)        // matches ChartLayer's zoom-out target
+      : resolveCentre({ anchor: chart.anchor, landmark: chart.landmark }, scale, ov);
   }
   const w = scale * CANVAS_W, h = scale * CANVAS_H;
   return { left: centre.cx - w / 2, top: centre.cy - h / 2, width: w, height: h, scale };
@@ -305,7 +322,10 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
 
   // V2: meme/reaction cutaways render as a short-lived inset OVERLAY, not flow-column
   // items — pull them out so they never consume a focal-point slot.
-  const memes = comps.filter(c => c && MEME_TYPES.includes(c.type) && c.asset);
+  // Owner ruling 2026-09-22: the video is ONE presentation. We do not cut away from the
+  // chart to b-roll or a reaction clip — the teaching lives on the chart. One flip to
+  // bring them back; MemeCutaway and its b-roll full-frame path stay intact below.
+  const memes = CUTAWAYS_ENABLED ? comps.filter(c => c && MEME_TYPES.includes(c.type) && c.asset) : [];
   // C6: on-chart annotation labels are removed (inaccurate + violate the layout rule).
   let flow = comps.filter(c => !['annotation', 'brand_bug', ...MEME_TYPES].includes(c.type));
   // HOOK never renders near-blank: if only text was given, inject one animated graphic.
@@ -325,13 +345,24 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
       .slice(0, _maxFlow).sort((a, b) => a - b);
     flow = keep.map(i => flow[i]);
   }
+  // The chart only actually plays for (play_to - play_from)/rate seconds; after that
+  // it is a frozen inset. Everything that used to key off the STATIC canvas_mode flag
+  // (graphics zone, caption look) now keys off this real window instead.
+  const _ch = seg.chart || {};
+  const _rate = Math.max(0.5, Math.min(3, _ch.rate || 1));
+  const clipF = (showChart && mode === 'chart_full')
+    ? Math.max(1, Math.round(ms2f(((_ch.play_to || 0) - (_ch.play_from || 0)) * 1000, fps) / _rate))
+    : 0;
   const chartBox = chartFinalBox(seg, cam, effMode);
   const chartAnchor = (seg.chart && seg.chart.anchor) || (cam && cam.to && cam.to.anchor) || 'center_right';
   const zone = graphicsZone(effMode, chartBox);
   const fadeIn = interpolate(frame, [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   // When the chart zooms (camera present), hold graphics back until it settles into the inset.
   const settleF = (cam && cam.from && cam.to) ? Math.min(ms2f(cam.duration_ms || 700, fps), seg.frameCount) : 0;
-  const gZone = zone && (effMode === 'graphics' || frame >= settleF * 0.55) ? zone : null;
+  // Graphics appear as the chart starts zooming out to the inset (clipF), not before —
+  // nothing overlaps the full-frame clip. Components whose enter_at_ms already passed
+  // render settled, so an early component is late, never lost.
+  const gZone = zone && (effMode === 'graphics' || (frame >= settleF * 0.55 && frame >= clipF)) ? zone : null;
 
   return (
     <AbsoluteFill style={{ opacity: fadeIn }}>
@@ -345,7 +376,7 @@ function SegmentView({ seg, srcUrl, fps, brand, cam, isLegacy, assets }) {
           → burned karaoke line; frozen chart or graphics-only scene → astronaut. */}
       {seg.captions && seg.captions.length > 0 && (
         <Captions captions={seg.captions} fps={fps} brand={brand}
-          frozen={!(showChart && isPlaying(seg))} />
+          frozen={!(showChart && isPlaying(seg) && frame < clipF)} />
       )}
       {seg.audio_url && <Audio src={seg.audio_url} />}
       {(seg.sfx || []).map((s, i) => s.url ? (
@@ -395,6 +426,7 @@ function BackgroundTreatment({ flow, seg, fps, brand }) {
 // V2: meme/reaction cutaway type + aliases — VRE-assigned media insets, rendered as
 // a short overlay by MemeCutaway (never part of the flow column).
 const MEME_TYPES = ['meme_cutaway', 'meme', 'reaction_clip', 'asset_flash'];
+const CUTAWAYS_ENABLED = false;   // Owner ruling 2026-09-22: one presentation, no b-roll
 
 // motion-graphic (non-text) primitive types — used by the hook guard to suppress
 // candle_cluster injection when a real visual component is already present.
@@ -655,8 +687,12 @@ function EffectWrap({ effect, settleMs, fps, children }) {
 // V2: MemeCutaway — a VRE-assigned meme/reaction media inset (pattern interrupt).
 // Pops in at enter_at_ms, holds ~1-2s, auto-exits. Image via Img, video via Video.
 // Unknown/missing asset name → renders NOTHING (never a blank hijack of the scene).
-// V2.1: kind:'broll' renders as a large centered cinematic inset; anything else
-// (meme/drive/unset) keeps the original small bottom-right corner inset.
+// V2.2 (Owner ruling 2026-09-22): kind:'broll' is a REAL cutaway — full frame,
+// edge to edge, no card/border, the way an editor cuts b-roll. It enters on a
+// directional slide (the direction is hashed off the asset url so it varies
+// between cutaways but stays deterministic across renders) and pushes out the
+// opposite side. Anything else (meme/drive/unset) keeps the original small
+// bottom-right corner inset.
 function MemeCutaway({ c, fps, assets }) {
   const a = (assets || {})[c.asset];
   if (!a || !a.url) return null;
@@ -665,12 +701,26 @@ function MemeCutaway({ c, fps, assets }) {
   const totalF = ms2f(holdMs + 240, fps);   // hold + pop-out tail
   return (
     <Sequence from={enterF} durationInFrames={totalF} layout="none">
-      <MemeCutawayInner a={a} holdMs={holdMs} fps={fps} kind={c.kind} />
+      <MemeCutawayInner a={a} holdMs={holdMs} fps={fps} kind={c.kind} assetName={c.asset} />
     </Sequence>
   );
 }
 
-function MemeCutawayInner({ a, holdMs, fps, kind }) {
+// b-roll entry directions — picked by a stable hash of the asset url, never at
+// random: a Remotion render must produce the same frame every time it runs.
+const BROLL_DIRS = [
+  { axis: 'X', sign: -1 },   // in from the left
+  { axis: 'X', sign:  1 },   // in from the right
+  { axis: 'Y', sign: -1 },   // in from the top
+  { axis: 'Y', sign:  1 },   // in from the bottom
+];
+// The animator tags cutaways kind:'drive' even for real b-roll (every asset in
+// job pg_20260922_n453ua came through as 'drive'), so the asset NAME is the second
+// signal — the library names them broll_*.mp4.
+const isBroll = (kind, assetName) => kind === 'broll' || /(^|[\/_-])broll/i.test(String(assetName || ''));
+const _hash = (str) => { let h = 0; for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return Math.abs(h); };
+
+function MemeCutawayInner({ a, holdMs, fps, kind, assetName }) {
   const frame = useCurrentFrame();   // local to the cutaway Sequence
   const inEnd = ms2f(220, fps);
   const outStart = ms2f(holdMs, fps);
@@ -680,15 +730,18 @@ function MemeCutawayInner({ a, holdMs, fps, kind }) {
   const media = isVideo
     ? <Video src={a.url} muted objectFit="cover" style={{ width: '100%', height: '100%' }} />
     : <Img src={a.url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />;
-  if (kind === 'broll') {
+  if (isBroll(kind, assetName)) {
+    const dir = BROLL_DIRS[_hash(String(a.url || '')) % BROLL_DIRS.length];
+    const inF = ms2f(360, fps);
+    const outF = ms2f(240, fps);                      // must fit the pop-out tail in MemeCutaway
+    const ein = interpolate(frame, [0, inF], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+    const eout = interpolate(frame, [outStart, outStart + outF], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.in(Easing.cubic) });
+    const off = dir.sign * 100 * ein - dir.sign * 100 * eout;   // in from its side, out the opposite
     return (
-      <div style={{ position: 'absolute', left: '50%', top: '50%', width: 960, height: 540, zIndex: 40,
-        transform: `translate(-50%, -50%) scale(${k * out})`, transformOrigin: 'center', opacity: out,
-        borderRadius: 22, overflow: 'hidden', border: '6px solid #FFFFFF',
-        boxShadow: '0 26px 90px rgba(20,49,95,0.45)', background: '#0E1622' }}>
+      <AbsoluteFill style={{ zIndex: 40, background: '#0E1622', overflow: 'hidden',
+        transform: `translate${dir.axis}(${off}%)` }}>
         {media}
-        <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 120px rgba(0,0,0,0.45)', pointerEvents: 'none' }} />
-      </div>
+      </AbsoluteFill>
     );
   }
   const rot = interpolate(frame, [0, inEnd], [-6, -2], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
@@ -2227,7 +2280,8 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
   const chart = seg.chart || {};
   const ov = chart.overlay;
   let scale, cx, cy;
-  if (cam && cam.from && cam.to) {
+  if (isTaughtChart(seg)) { scale = 1; cx = CANVAS_W / 2; cy = CANVAS_H / 2; }
+  else if (cam && cam.from && cam.to) {
     const dur = Math.min(ms2f(cam.duration_ms || 700, fps), seg.frameCount);
     const t = interpolate(frame, [0, dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.cubic) });
     const sFrom = cam.from.scale ?? INSET_SCALE_DEFAULT, sTo = cam.to.scale ?? 1;
@@ -2256,27 +2310,39 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
   const inset = scale < 0.95;
   // Ken Burns drift on the frozen inset (cinematic, not flat)
   const kb = (!playing && inset) ? 1 + 0.03 * (interpolate(frame, [0, seg.frameCount], [0, 1], { extrapolateRight: 'clamp' })) : 1;
+  // (1) A <Freeze frame> target is on the SOURCE clock; the enclosing <Sequence
+  // durationInFrames> is this segment's VOICEOVER length. Remotion's Freeze sets the absolute
+  // frame to frameToFreeze + relativeFrom but passes the SequenceContext through unchanged, so a
+  // target past the segment window puts the <Video> out of range and it renders NOTHING — no
+  // error, no warning, clean render log, only the white card left. Clamp into the window.
+  // (job pg_20260922_n453ua seg 0: play_to 28s = frame 840 inside a 591-frame segment.)
+  const freezeF = (sec) => Math.max(0, Math.min(ms2f((sec || 0) * 1000, fps), (seg.frameCount || 1) - 1));
+  // (2) No content, no card. A bordered white box with nothing inside reads as an editing
+  // mistake, not as whitespace — draw nothing and let the graphics take the frame.
+  const content = playing ? (srcUrl ? (
+      <AbsoluteFill>
+        {/* C5: hold the last frame so the chart never goes blank when the clip ends before the segment */}
+        <Freeze frame={freezeF(chart.play_to)}>
+          <Video src={srcUrl} muted objectFit="contain" style={fillVid} />
+        </Freeze>
+        <Sequence from={0} durationInFrames={Math.max(1, Math.round(ms2f(((chart.play_to||0)-(chart.play_from||0))*1000, fps) / rate))}>
+          <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} playbackRate={rate} muted objectFit="contain" style={fillVid} />
+        </Sequence>
+      </AbsoluteFill>
+    ) : null)
+    : chart.overlay && chart.overlay.frame_url ? (
+      <ChartOverlay overlay={chart.overlay} layer={seg._layer} fps={fps} screen={scale * kb} />
+    ) : chart.freeze_frame_url ? (
+      <Img src={chart.freeze_frame_url} style={fill} />
+    ) : srcUrl ? (
+      <Freeze frame={freezeF(chart.freeze_at)}><Video src={srcUrl} muted objectFit="contain" style={fillVid} /></Freeze>
+    ) : null;
+  if (!content) return null;
   return (
     <AbsoluteFill style={{ transform: transformStr(scale, cx + wp * CANVAS_W * 0.16, cy), transformOrigin: 'center center', filter: wp > 0.01 ? `blur(${(wp * 16).toFixed(1)}px)` : undefined }}>
       <AbsoluteFill style={{ borderRadius: inset ? 20 : 0, overflow: 'hidden', boxShadow: inset ? '0 20px 60px rgba(11,30,64,0.25)' : 'none', border: inset ? '2px solid #14315F' : 'none', background: '#FFFFFF' }}>
         <AbsoluteFill style={{ transform: `scale(${kb})` }}>
-          {playing ? (
-            <AbsoluteFill>
-              {/* C5: hold the last frame so the chart never goes blank when the clip ends before the segment */}
-              <Freeze frame={ms2f((chart.play_to||0)*1000, fps)}>
-                <Video src={srcUrl} muted objectFit="contain" style={fillVid} />
-              </Freeze>
-              <Sequence from={0} durationInFrames={Math.max(1, Math.round(ms2f(((chart.play_to||0)-(chart.play_from||0))*1000, fps) / rate))}>
-                <Video src={srcUrl} trimBefore={ms2f((chart.play_from||0)*1000, fps)} trimAfter={ms2f((chart.play_to||0)*1000, fps)} playbackRate={rate} muted objectFit="contain" style={fillVid} />
-              </Sequence>
-            </AbsoluteFill>
-          ) : chart.overlay && chart.overlay.frame_url ? (
-            <ChartOverlay overlay={chart.overlay} layer={seg._layer} fps={fps} screen={scale * kb} />
-          ) : chart.freeze_frame_url ? (
-            <Img src={chart.freeze_frame_url} style={fill} />
-          ) : (
-            <Freeze frame={ms2f((chart.freeze_at||0)*1000, fps)}><Video src={srcUrl} muted objectFit="contain" style={fillVid} /></Freeze>
-          )}
+          {content}
         </AbsoluteFill>
       </AbsoluteFill>
     </AbsoluteFill>
@@ -2284,12 +2350,14 @@ function ChartLayer({ seg, srcUrl, fps, cam, mode }) {
 }
 
 // ── Caption chunking — ONE definition, shared by both caption looks ──────────
-// Owner ruling (beginner-explainer design v4): NO word cap. The bubble never
-// shortens caption text to fit; same chunk count and same word timings as the
-// burned line. Break at [.,!?;] once >=3 words, else every 6.
+// Owner ruling (beginner-explainer design v4 + long-form correction 2026-09-22):
+// NO word cap. The ~6-word chunking belongs to SHORT form, where the 1080-wide
+// frame forces it. At 1920x1080 a caption line runs to the END OF THE SENTENCE;
+// it wraps (burned line) / grows the bubble instead of being cut into pieces.
+// ponytail: 24-word safety break for a runaway un-punctuated transcript run.
 function captionChunks(captions) {
   const chunks = []; let cur = [];
-  captions.forEach(cap => { cur.push(cap); const brk = /[.,!?;]$/.test(cap.word); if ((brk && cur.length >= 3) || cur.length >= 6) { chunks.push(cur); cur = []; } });
+  captions.forEach(cap => { cur.push(cap); const brk = /[.!?]$/.test(cap.word); if ((brk && cur.length >= 3) || cur.length >= 24) { chunks.push(cur); cur = []; } });
   if (cur.length) chunks.push(cur);
   return chunks;
 }
@@ -2306,7 +2374,7 @@ function Captions({ captions, fps, brand, frozen = false }) {
   if (!captions.length || sec < captions[0].start) return null;
   if (frozen) return <TalkingCaptions captions={captions} chunks={chunks} active={active} sec={sec} fps={fps} brand={brand} />;
   return (
-    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+    <AbsoluteFill style={{ pointerEvents: 'none', zIndex: 60 }}>
       <div style={{ position: 'absolute', bottom: 56, left: 96, right: 96, display: 'flex', justifyContent: 'center' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '0 10px', maxWidth: '86%' }}>
           {chunk.map((cap, i) => {
@@ -2338,7 +2406,7 @@ function Captions({ captions, fps, brand, frozen = false }) {
 // Two deliberate departures from the 1080×1920 source, both forced by the frame:
 //  1. Every dimension is scaled by frame HEIGHT (CAP_K), per the build plan.
 //  2. The bubble hugs its text (auto width, capped) instead of flex:1. At 1920
-//     wide a full-width bubble would be ~3× wider than a 6-word line and read as
+//     wide a full-width bubble would be ~3× wider than a short line and read as
 //     an empty slab; in the portrait original flex:1 already produced a snug box.
 //  Fonts use this composition's loaded Poppins, NOT brand.font_body ('Inter') —
 //  long form never loads Inter/Oswald, so naming them would fall back to Arial.
@@ -2365,7 +2433,7 @@ function TalkingCaptions({ captions, chunks, active, sec, fps, brand }) {
   line.forEach(c => { const d = (sec - c.start) * fps; if (d >= 0 && d < 5) bob = Math.max(bob, 1 - d / 5); });
 
   return (
-    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+    <AbsoluteFill style={{ pointerEvents: 'none', zIndex: 60 }}>
       <div style={{ position: 'absolute', left: 96, right: 96, bottom: 56, display: 'flex',
         flexDirection: right ? 'row-reverse' : 'row', alignItems: 'flex-end',
         justifyContent: 'flex-start', gap: 26 * CAP_K }}>

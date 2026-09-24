@@ -28,24 +28,13 @@ for (const text of [
   assert(chunks.every(c => c.length > 0), 'empty chunk produced');
 }
 
-// 2. Punctuation breaks once >=3 words; otherwise every 6. Guards the "same chunk
-//    count, same word timings" ruling against a future word cap creeping back in.
-assert.deepStrictEqual(
-  captionChunks(words('a b c, d e f g h')).map(c => c.length), [3, 5],
-  'comma landing on the 3rd word must break the line there'
-);
-assert.deepStrictEqual(
-  captionChunks(words('a b, c d e f g h')).map(c => c.length), [6, 2],
-  'comma on the 2nd word must NOT break — the >=3 rule declines it'
-);
-assert.deepStrictEqual(
-  captionChunks(words('a, b c d e f g')).map(c => c.length), [6, 1],
-  'a comma before the 3rd word must NOT break — the 6-word rule applies'
-);
-assert.deepStrictEqual(
-  captionChunks(words('one two three four five six seven')).map(c => c.length), [6, 1],
-  'unpunctuated text breaks every 6 words'
-);
+// 2. Long form (fix 1, 2026-09-22): a line ends only at a sentence end [.!?] once >=3 words; commas never
+//    split it; a 24-word safety break covers an unpunctuated run. (The old comma / 6-word rule was short-form.)
+const lens = (t) => captionChunks(words(t)).map(c => c.length);
+assert.deepStrictEqual(lens('a b c, d e f g h'), [8], 'a comma must NOT break a long-form line');
+assert.deepStrictEqual(lens('a b c. d e f g h'), [3, 5], 'a sentence end on the 3rd word breaks the line there');
+assert.deepStrictEqual(lens('a b. c d e f g h'), [8], 'a sentence end before the 3rd word must NOT break — the >=3 rule declines it');
+assert.deepStrictEqual(lens(Array.from({ length: 30 }, (_, i) => 'w' + i).join(' ')), [24, 6], 'unpunctuated text breaks every 24 words');
 
 // 3. Both looks read the same chunk list, so the bubble can never show a
 //    different number of lines than the burned captions would have.

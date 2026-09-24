@@ -83,6 +83,10 @@ function getCompositionSpec(sceneJson) {
       fps:    sceneJson.fps       || 30,
     };
   }
+  // PG_PRESENTATION (PipsGravity "Play, Hold, Mark" long-form): props built by PG_Master (overlay/render-props.mjs)
+  if (sceneJson.render_type === 'PG_PRESENTATION') {
+    return { id: 'PGPresentation', width: 1920, height: 1080, fps: (sceneJson.props && sceneJson.props.fps) || 30 };
+  }
   if (sceneJson.render_type === 'REPURPOSE_LONG_FORM') {
     return {
       id:     'RepurposeLongForm',
@@ -342,6 +346,21 @@ function checkFreezeSeams(timeline) {
   return bad;
 }
 
+// PG_PRESENTATION: the source video + the ONE narration WAV arrive base64; decode, serve, and hand PGPresentation
+// its props with http urls (it never reads the payload itself).
+function setupPGPresentationFiles(sceneJson) {
+  const PORT = process.env.PORT || 3000;
+  const dirName = `${sceneJson.folder_name || 'pg'}_${Date.now()}`;
+  const tmpDir = path.resolve(__dirname, '../tmp_renders', dirName);
+  const baseUrl = `http://localhost:${PORT}/public/tmp_renders/${dirName}`;
+  if (!sceneJson.source_video_b64 || !sceneJson.audio_b64 || !sceneJson.props) throw new Error('PG_PRESENTATION needs source_video_b64, audio_b64 and props');
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, 'source.mp4'), Buffer.from(sceneJson.source_video_b64, 'base64'));
+  fs.writeFileSync(path.join(tmpDir, 'voice.wav'), Buffer.from(sceneJson.audio_b64, 'base64'));
+  const { source_video_b64, audio_b64, ...rest } = sceneJson;
+  return { sceneJson: { ...rest, props: { ...sceneJson.props, video: `${baseUrl}/source.mp4`, audio: `${baseUrl}/voice.wav` } }, cleanupDir: tmpDir };
+}
+
 async function renderScene(sceneJson) {
   const bp   = await getBundle();
   const spec = getCompositionSpec(sceneJson);
@@ -373,6 +392,13 @@ async function renderScene(sceneJson) {
     activeSceneJson = setup.sceneJson;
     cleanupDir      = setup.cleanupDir;
   }
+
+  if (sceneJson.render_type === 'PG_PRESENTATION') {
+    const setup     = setupPGPresentationFiles(sceneJson);
+    activeSceneJson = setup.sceneJson;
+    cleanupDir      = setup.cleanupDir;
+  }
+  const inputProps = activeSceneJson.render_type === 'PG_PRESENTATION' ? activeSceneJson.props : { sceneJson: activeSceneJson };
 
   // ── NARRATOR_EXPLAINER: 404-proof SFX + seeded random BGM ──────────────
   // (See normalizeNarratorAudio above.) Only touches narrator scenes; every
@@ -414,7 +440,7 @@ async function renderScene(sceneJson) {
   const composition = await selectComposition({
     serveUrl:   bp,
     id:         spec.id,
-    inputProps: { sceneJson: activeSceneJson },
+    inputProps,
   });
 
 await renderMedia({
@@ -422,7 +448,7 @@ await renderMedia({
   serveUrl:        bp,
   codec:           'h264',
   outputLocation:  outPath,
-  inputProps:      { sceneJson: activeSceneJson },   // ← sceneJson, not payload
+  inputProps,   // ← sceneJson, not payload (PGPresentation: its props)
   durationInFrames,
   fps:    spec.fps,
   width:  spec.width,
