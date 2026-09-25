@@ -355,10 +355,16 @@ function setupPGPresentationFiles(sceneJson) {
   const baseUrl = `http://localhost:${PORT}/public/tmp_renders/${dirName}`;
   if (!sceneJson.source_video_b64 || !sceneJson.audio_b64 || !sceneJson.props) throw new Error('PG_PRESENTATION needs source_video_b64, audio_b64 and props');
   fs.mkdirSync(tmpDir, { recursive: true });
-  fs.writeFileSync(path.join(tmpDir, 'source.mp4'), Buffer.from(sceneJson.source_video_b64, 'base64'));
-  fs.writeFileSync(path.join(tmpDir, 'voice.wav'), Buffer.from(sceneJson.audio_b64, 'base64'));
-  const { source_video_b64, audio_b64, ...rest } = sceneJson;
-  return { sceneJson: { ...rest, props: { ...sceneJson.props, video: `${baseUrl}/source.mp4`, audio: `${baseUrl}/voice.wav` } }, cleanupDir: tmpDir };
+  const writeB64 = (b64, name) => { fs.writeFileSync(path.join(tmpDir, name), Buffer.from(b64, 'base64')); return `${baseUrl}/${name}`; };
+  const video = writeB64(sceneJson.source_video_b64, 'source.mp4'), audio = writeB64(sceneJson.audio_b64, 'voice.wav');
+  const assets = {};
+  for (const [name, a] of Object.entries(sceneJson.assets || {})) {
+    if (!a?.b64) continue;
+    const ext = (String(name).split('.').pop() || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
+    assets[name] = { url: writeB64(a.b64, `cutaway_${Object.keys(assets).length}.${ext}`), media_type: a.media_type || 'video/mp4' };
+  }
+  const { source_video_b64, audio_b64, assets: _assets, ...rest } = sceneJson;
+  return { sceneJson: { ...rest, props: { ...sceneJson.props, video, audio, ...(Object.keys(assets).length && { assets }) } }, cleanupDir: tmpDir };
 }
 
 async function renderScene(sceneJson) {
