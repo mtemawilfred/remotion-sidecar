@@ -86,7 +86,9 @@ export const PGPresentation = (p) => {
   // product (side quest 2026-09-24, Owner): naming the "Mastermind Trading Plan" plays the short-form pop-up, triggered by the
   // spoken words (first mention at or after 90 s, budget 1). A text card that names the product is dropped: the pop-up replaces it.
   const promoWin = React.useMemo(() => productWindow(p.captions.filter((w) => w.a >= PRODUCT_NOT_BEFORE).map((w) => ({ word: w.w, start: w.a / 1000 }))), [p.captions]);
-  const beats = React.useMemo(() => p.beats.map((b) => (b.graphic && /mastermind/i.test(JSON.stringify(b.graphic)) ? { ...b, graphic: null } : b)), [p.beats]);
+  // pt70c: a card under the pop-up read as two graphics at once (2:22 p-diagram behind the blur) -> the pop-up's window owns the screen
+  const under = (b) => promoWin && b.a < promoWin.end * 1000 && b.z > promoWin.start * 1000 && !['a-chapter', 'p-endcard'].includes(b.graphic?.treatment);
+  const beats = React.useMemo(() => p.beats.map((b) => (b.graphic && (/mastermind/i.test(JSON.stringify(b.graphic)) || under(b)) ? { ...b, graphic: null } : b)), [p.beats, promoWin]);
   const promo = productPopupState(now / 1000, promoWin);
   const { src } = p, S = Math.min(W / src.w, H / src.h), cw = src.w * S;
   const k = Math.max(0, beats.findIndex((b) => now >= b.a && now < b.z)), beat = beats[k];
@@ -184,7 +186,7 @@ export const PGPresentation = (p) => {
       {beats.map((b, i) => b.graphic && now >= b.a - 400 && now < b.z + 300 && (() => {
         const next = beats[i + 1], seamOut = next?.graphic && next.a === b.z ? next.graphic.seam : null;
         const P = PRES[b.graphic.treatment];
-        if (P) return <P key={b.id} b={b} now={now} box={PANEL} band railOn={railOn} toScreen={toScreen} video={p.video} src={src} f={f} />;
+        if (P) return <P key={b.id} b={b} now={now} box={PANEL} band railOn={railOn} toScreen={toScreen} video={p.video} src={src} f={f} captions={p.captions} />;
         return <Card key={b.id} b={b} now={now} box={PANEL} seamOut={seamOut} />;
       })())}
       {beats.map((b) => b.contrast && (
@@ -751,13 +753,20 @@ function ChapterRecapCut({ b, now, video, src, f }) {
 // end card (Owner pt70): engagement, never a made-up "watch next". parts = [the comment question, the engagement line,
 // the subscribe / notification line], all restating the outro narration. Comment bubble first, then the subscribe button
 // is pressed (turns SUBSCRIBED) and the bell rings.
-function EndCardCut({ b, now }) {
-  const g = b.graphic, t = now - b.a, [ask, line2, line3] = g.parts;
-  const p1 = out(seg(t, 150, 700)), p2 = out(seg(t, 700, 1250)), p3 = out(seg(t, 1250, 1800)), press = seg(t, 2400, 2600), done = t >= 2550;
-  const ring = t > 2800 && t < 4000 ? Math.sin((t - 2800) / 1000 * Math.PI * 8) * 16 * (1 - seg(t, 2800, 4000)) : 0;
+// pt70c: follows the voice. Nothing while the Mastermind CTA is spoken (the product pop-up owns that); the bubble lands on the
+// spoken question, the subscribe row with the next sentence, and the button is pressed on the word "subscribe".
+function EndCardCut({ b, now, captions }) {
+  const g = b.graphic, [ask, line2, line3] = g.parts, said = (captions || []).filter((w) => w.a >= b.a && w.a < b.z);
+  const qi = said.findIndex((w) => /\?["')]*$/.test(w.w)); let qs = qi;
+  while (qs > 0 && !/[.!?]["')]*$/.test(said[qs - 1].w)) qs--;
+  const q0 = qi >= 0 ? said[qs].a : b.a, q1 = said[qi + 1]?.a ?? q0 + 700;
+  const sub = said.find((w) => w.a > q0 && /^subscrib/i.test(w.w))?.a ?? q1 + 1500, t = now - q0, ts = now - sub;
+  if (t < 0) return null;
+  const p1 = out(seg(t, 0, 550)), p2 = out(seg(now, q1, q1 + 550)), p3 = out(seg(now, Math.min(q1 + 300, sub - 600), sub)), press = seg(ts, 150, 350), done = ts >= 300;
+  const ring = ts > 550 && ts < 1750 ? Math.sin((ts - 550) / 1000 * Math.PI * 8) * 16 * (1 - seg(ts, 550, 1750)) : 0;
   const Bell = () => <svg width={54} height={54} viewBox="0 0 24 24" style={{ transform: `rotate(${ring}deg)`, transformOrigin: '50% 10%' }}>
     <path d="M12 2a1.5 1.5 0 0 1 1.5 1.5v.6A6.5 6.5 0 0 1 18.5 10.5v4l2 3v1h-17v-1l2-3v-4A6.5 6.5 0 0 1 10.5 4.1v-.6A1.5 1.5 0 0 1 12 2Zm-2.3 18h4.6a2.3 2.3 0 0 1-4.6 0Z" fill={KNAVY} /></svg>;
-  return <AbsoluteFill style={{ background: '#F6F7F4', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 120 }}>
+  return <AbsoluteFill style={{ background: '#F6F7F4', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 120, opacity: out(seg(t, 0, 300)) }}>
     <div style={{ position: 'relative', width: 1400, boxSizing: 'border-box', padding: '46px 64px', background: '#fff', border: `5px solid ${KNAVY}`, borderRadius: 32,
       boxShadow: '0 18px 44px rgba(0,0,0,.16)', opacity: p1, transform: `translateY(${(1 - p1) * 30}px)`, display: 'flex', alignItems: 'center', gap: 40 }}>
       <svg width={96} height={96} viewBox="0 0 24 24" style={{ flex: 'none' }}><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill={GOLD} />
@@ -812,12 +821,12 @@ const partAt = (b, i) => b.graphic.steps?.find((s) => s.kind === 'part' && s.par
 
 // definition (D.definition): a light term card in the panel, a dashed navy leader from its side to mark 0 (when there is one)
 function Definition({ b, now, box, toScreen }) {
-  const t = now - b.a, p = out(seg(t, 1000, 1500)) * (1 - io(seg(now, b.z - 400, b.z))); if (p <= 0) return null;
+  const t = now - b.a, p = out(seg(t, 300, 800)) * (1 - io(seg(now, b.z - 400, b.z))); if (p <= 0) return null;
   const [term, ...meaning] = b.graphic.parts, x = box.x + (1 - p) * 80, w = box.w, inner = w - 88;
   const ts = fitSize(term, inner, 84, 36, 2), ms = Math.min(...meaning.map((s) => fitSize(s, inner - 30, 36, 24, 3)), 36);
   const y = box.y + box.h / 2 - 250, pin = b.graphic.pin && toScreen(b.graphic.pin);
   return <>
-    {pin && <div style={{ opacity: p }}><ScreenArrow x1={x} y1={y + 250} x2={pin[0] + 12} y2={pin[1]} p={io(seg(t, 1500, 2100))} col={KNAVY} w={5} dash="10 10" /></div>}
+    {pin && <div style={{ opacity: p }}><ScreenArrow x1={x} y1={y + 250} x2={pin[0] + 12} y2={pin[1]} p={io(seg(t, 800, 1400))} col={KNAVY} w={5} dash="10 10" /></div>}
     <div style={{ position: 'absolute', left: x, top: box.y, width: w, height: box.h, display: 'flex', alignItems: 'center', opacity: p }}>
       <div style={{ width: '100%', boxSizing: 'border-box', padding: '44px 44px 40px', background: '#eff0eb', borderRadius: 20, boxShadow: '0 16px 36px rgba(0,0,0,.3)' }}>
         <Label col="#52728f">NEW TERM</Label>
@@ -872,7 +881,7 @@ function Rail({ r, now, box }) {
 // quick check (D.quick): card asks, a 3 s ring counts down, the answer lands in the card; the ring on the chart = mark 0 (render-props
 // times it to the reveal); a dashed leader runs from the card to it
 function Quick({ b, now, box, band, railOn, toScreen }) {
-  const t = now - b.a, a = seg(t, 800, 1100) * (1 - seg(now, b.z - 400, b.z)); if (a <= 0) return null;
+  const t = now - b.a, a = seg(t, 300, 800) * (1 - seg(now, b.z - 400, b.z)); if (a <= 0) return null;
   const cw = band ? box.w : 580, pin = b.graphic.pin && toScreen(b.graphic.pin);
   const x0 = band ? box.x : pin && pin[0] > W / 2 ? 40 : W - 620;
   const [q, ans] = b.graphic.parts, CH = 500, y0 = (band ? box.y + (box.h - CH) / 2 : railOn ? 280 : 220) - 40 * out(seg(t, 800, 1100));
@@ -901,7 +910,7 @@ function Quick({ b, now, box, band, railOn, toScreen }) {
 
 // common mistake (D.mistake): red-edged card slides in from the left, pulses once; the candle's red ring = mark 0 (tone warn)
 function Mistake({ b, now, box, band, railOn }) {
-  const t = now - b.a, p = out(seg(t, 800, 1300)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
+  const t = now - b.a, p = out(seg(t, 300, 800)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
   const w = band ? box.w : 680, x = band ? box.x + (1 - p) * 80 : -w - 40 + (w + 76) * p, pl = 1 + 0.03 * Math.sin(seg(t, 1300, 1900) * Math.PI);
   const P = b.graphic.parts, fs = Math.min(...P.map((s) => fitSize(s, w - 106 - 64, 36, 24, 3)));
   return <div style={{ position: 'absolute', left: x, top: band ? box.y : railOn ? 196 : 140, width: w, height: band ? box.h : undefined, display: 'flex', alignItems: 'center', opacity: band ? c01(p * 1.5) : 1 }}>
@@ -931,7 +940,7 @@ function Rule({ b, now }) {
 
 // coming up (D.tease): ink lower-third card, blue edge, bobbing gold down-arrow, a timer line draining to the beat's end
 function Tease({ b, now, box, band, railOn }) {
-  const t = now - b.a, p = out(seg(t, 1000, 1500)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
+  const t = now - b.a, p = out(seg(t, 300, 800)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
   const w = band ? box.w : 860, x = band ? box.x : -w - 40 + (w + 76) * p, drain = 1 - seg(t, 1500, b.z - b.a - 500);
   const text = b.graphic.parts.join(' ');
   return <div style={{ position: 'absolute', left: x, top: band ? box.y : railOn ? 196 : 140, width: w, height: band ? box.h : undefined, display: 'flex', alignItems: 'center', opacity: band ? p : 1 }}>
@@ -950,7 +959,7 @@ function Tease({ b, now, box, band, railOn }) {
 // astronaut aside (D.astro): the PipsGravity astronaut (the caption avatar) slides in from the right, the bubble's words pop in
 // one by one (last word blue); the gold ring on the wick = mark 0
 function Astro({ b, now }) {
-  const t = now - b.a, p = out(seg(t, 1200, 1700)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
+  const t = now - b.a, p = out(seg(t, 300, 800)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
   const ax = W + 160 + (W - 180 - W - 160) * p, ay = 560, words = b.graphic.parts.join(' ').split(/\s+/);
   return <>
     <div style={{ position: 'absolute', left: ax - 540, top: ay - 200, maxWidth: 480, opacity: c01(p * 1.4), background: '#fff', border: `8px solid ${KI}`, borderRadius: 28,
