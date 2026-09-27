@@ -16,9 +16,11 @@
 // OUT: the video. The sidecar only draws; every time and position is decided upstream.
 //
 // Motion values follow the Play/Hold/Mark design v2 (PROPOSED, not approved standards): hold signal = white flash
-// 0.8 -> 0 over 0.13 s + grey drain 0.7 s + HELD tag; marks draw on over 500 ms ease-out, 100 ms before the word;
-// a mark dims to 40% after its beat and is gone one beat later (carried marks stay), and every mark goes on a cut;
-// every card pushes the chart to 72% (500 ms) and sits beside it; zoom eases 1 s onto the mark's box (7.2: was 800 ms).
+// 0.8 -> 0 over 0.13 s + grey drain 0.7 s; marks draw on over 500 ms ease-out, 100 ms before the word;
+// a mark dims to 40% after its beat and is gone one beat later (carried marks stay), and every mark goes on a cut.
+// pt70 FLOOR (Owner: the prototype temp/PG_Master_Animated_Presentation_Prototype is the base, effects layer on top):
+// blurred ambient chart behind everything; every beat has its own eased framing (never a parked chart); a side card slides
+// the chart into a 63% column; no editing-mechanics chips; every card text fits its box (no overflow, no ellipsis).
 import React from 'react';
 import { AbsoluteFill, Audio, Easing, Freeze, Img, OffthreadVideo, Sequence, interpolate, staticFile, useCurrentFrame } from 'remotion';
 import { Video } from '@remotion/media';
@@ -32,7 +34,38 @@ const { fontFamily: INTER } = loadInter('normal', { weights: ['700', '800'], sub
 const { fontFamily: OSWALD } = loadOswald('normal', { weights: ['700'], subsets: ['latin'] });
 const W = 1920, H = 1080, NAVY = '#1B2A4A', GOLD = '#C9A84C', RED = '#C0392B', GREEN = '#1E8449', INK = '#0F172A';
 const HEAD = `${OSWALD}, Impact, sans-serif`, BODY = `${INTER}, Arial, sans-serif`;
-const PUSH = 0.72, PAD = 40, DRAW_MS = 500, LEAD_MS = 100, EASE_MS = 1000;
+const DRAW_MS = 500, LEAD_MS = 100, EASE_MS = 1000;
+// FLOOR (prototype): chart column 63% when a side card is up; camera eases 850 ms per beat, creeps 2.5% through the beat
+const COL = 0.63, CAM_MS = 850, CREEP = 1.025, CAM_Z = [1.06, 1.12, 1.03, 1.15, 1.08, 1.1], CHAPTER_MS = 3200;
+const PANEL = { x: Math.round(W * 0.645), y: 96, w: Math.round(W * 0.325), h: 780 }; // right column, clear of the captions
+// cards that sit beside the chart (the chart slides left for them); every other graphic is a full-frame cut
+const SIDE = new Set(['definition', 'spine', 'quick', 'mistake', 'tease', 'astro', 'p-statement', 'p-list', 'p-compare']);
+// a beat's framing: centred on everything drawn on this frame (its marks + marks still up since the last cut + treatment
+// points), zoomed no further than keeps all of it inside 84% of the chart. Rewinds / contrasts stay at 1x.
+function beatCam(beats, i, src) {
+  const b = beats[i], pts = [];
+  for (let j = i; j >= 0; j--) { beats[j].marks.forEach((m) => { if (j === i || m.carried || j === i - 1) pts.push(m.box.slice(0, 2), m.box.slice(2, 4)); }); if (beats[j].cut) break; }
+  const g = b.graphic, add = (xy) => xy && pts.push(xy);
+  b.trap?.stops.forEach(add); add(b.finished?.entry); add(b.finished?.target); add(b.question?.pin); add(b.predict?.at); add(g?.pin);
+  if (b.rr) pts.push([b.rr.x0, b.rr.entry_y], [b.rr.x1, b.rr.stop_y], [b.rr.x1, Math.min(...b.rr.series.map((s) => s.best_y))]);
+  if (b.camera?.box && b.camera.kind !== 'spotlight') { const [x0, y0, x1, y1] = b.camera.box; return { z: b.camera.scale, fx: (x0 + x1) / 2, fy: (y0 + y1) / 2 }; }
+  if (b.mode === 'rewind' || b.contrast || b.camera?.kind === 'spotlight') return { z: 1, fx: src.w / 2, fy: src.h / 2 };
+  let fx = src.w / 2, fy = src.h / 2, zmax = 1.17;
+  const ok = pts.filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+  if (ok.length) {
+    const xs = ok.map((q) => q[0]), ys = ok.map((q) => q[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    fx = (x0 + x1) / 2; fy = (y0 + y1) / 2; zmax = Math.min(zmax, (src.w * 0.84) / Math.max(1, x1 - x0), (src.h * 0.84) / Math.max(1, y1 - y0));
+  }
+  return { z: Math.max(1, Math.min(CAM_Z[i % CAM_Z.length], zmax)), fx, fy };
+}
+// Text that must fit its box (Owner pt70: no overflow, no "..."). Largest size <= base where every word fits the width and the
+// whole string fits `lines` lines. ponytail: width is estimated (Inter 800 caps ~0.68 em, mixed ~0.58 em), not measured;
+// swap for a canvas measureText if the card font changes.
+const fitSize = (text, w, base, min = 20, lines = 1) => {
+  const s = String(text || ''), em = s === s.toUpperCase() ? 0.7 : 0.6, words = s.split(/\s+/).filter(Boolean);
+  const longest = Math.max(1, ...words.map((x) => x.length));
+  return Math.floor(Math.max(min, Math.min(base, w / (longest * em), (w * lines * 0.92) / (Math.max(1, s.length) * em))));
+};
 const url = (s) => (/^https?:/.test(s) ? s : staticFile(s));
 const c01 = (x) => Math.max(0, Math.min(1, x));
 const out = Easing.out(Easing.cubic), io = Easing.inOut(Easing.cubic); // = the design demos' eo / eio
@@ -58,32 +91,32 @@ export const PGPresentation = (p) => {
   const { src } = p, S = Math.min(W / src.w, H / src.h), cw = src.w * S;
   const k = Math.max(0, beats.findIndex((b) => now >= b.a && now < b.z)), beat = beats[k];
   const endcardOn = beat.graphic?.treatment === 'p-endcard';
-  // 7.4 step rail: while it is up it owns the top edge (the chapter chip gives way, HELD drops below it)
+  // 7.4 step rail: while it is up it owns the top edge (the chapter chip gives way)
   const railOn = !endcardOn && !!p.rail && now >= p.rail.at[0].a && now < p.rail.z;
 
-  // push: merged spans of consecutive pushed beats, 500 ms in/out (band / quiet cards leave the chart where it is)
-  const pushed = beats.filter((b) => b.graphic && (b.graphic.layout?.mode || 'push') === 'push').reduce((acc, b) => {
+  // FLOOR (pt70, temp/PG_Master_Animated_Presentation_Prototype): a side card never squeezes into the band beside the chart;
+  // the chart slides left into the prototype's 63% column at full height and the card owns the right column.
+  const pushed = beats.filter((b) => SIDE.has(b.graphic?.treatment)).reduce((acc, b) => {
     const last = acc.at(-1); if (last && last[1] === b.a) last[1] = b.z; else acc.push([b.a, b.z]); return acc; }, []);
-  const push = Math.max(0, ...pushed.map(([a, z]) => io(c01((now - a) / 500)) * io(c01((z - now) / 500))));
-  const sc = S * (1 - (1 - PUSH) * push), left = interpolate(push, [0, 1], [(W - cw) / 2, PAD]), top = (H - src.h * sc) / 2;
+  const push = Math.max(0, ...pushed.map(([a, z]) => io(c01((now - a) / 600)) * io(c01((z - now) / 600))));
+  const scP = Math.min(COL * W / src.w, H / src.h);
+  const sc = interpolate(push, [0, 1], [S, scP]), left = interpolate(push, [0, 1], [(W - cw) / 2, (COL * W - src.w * scP) / 2]), top = (H - src.h * sc) / 2;
 
-  // camera (design D.zoom): eases in 1 s, holds, eases out 1 s, and brings the mark's box (source px) to the chart's centre.
-  // spotlight (D.spotlight): no zoom; everything outside the mark fades back, 600 ms in / out.
-  let zoom = 1, ox = src.w / 2, oy = src.h / 2, tx = 0, ty = 0, zk = 0, spot = 0;
-  // A quick check must keep its answer mark visible. An inherited camera move can zoom to a different
-  // source mark, pushing the quick-check pin (and its answer ring) off-screen.
-  const cam = beat?.graphic?.treatment === 'quick' ? null : beat?.camera?.box && beat.camera;
-  if (cam) {
-    const [x0, y0, x1, y1] = cam.box; ox = (x0 + x1) / 2; oy = (y0 + y1) / 2;
-    if (cam.kind === 'spotlight') spot = io(c01((now - beat.a) / 600)) * io(c01((beat.z - now) / 600));
-    else { zk = io(c01((now - beat.a) / EASE_MS)) * io(c01((beat.z - now) / EASE_MS)); zoom = 1 + (cam.scale - 1) * zk;
-      // pan toward the centre only as far as the zoomed video still covers the chart box (a mark near the recording's
-      // edge would otherwise pull the frame off-screen: the demo had paper there, a video has nothing)
-      const pan = (c, n) => Math.min((zoom - 1) * c, Math.max(-(zoom - 1) * (n - c), (n / 2 - c) * zk));
-      tx = pan(ox, src.w); ty = pan(oy, src.h); }
-  }
-  // source px -> screen px (push + zoom), for chips drawn outside the zoomed layer
-  const toScreen = ([x, y]) => [left + sc * (ox + tx + zoom * (x - ox)), top + sc * (oy + ty + zoom * (y - oy))];
+  // FLOOR camera: every beat has its own framing (prototype scene scales 1.02-1.17 around what the beat marks), eased
+  // 850 ms from the last one, then a slow 2.5% creep, so the picture is never parked. An explicit beat.camera zoom
+  // (design D.zoom) is the same move with the planner's scale; spotlight (D.spotlight) keeps its own 600 ms fade.
+  const cams = React.useMemo(() => beats.map((b, i) => beatCam(beats, i, src)), [beats, src]);
+  const bp = out(c01((now - beat.a) / CAM_MS)), creep = (x) => 1 + (CREEP - 1) * io(c01(x));
+  const c0 = cams[k - 1] || cams[k], c1 = cams[k], q = (now - beat.a) / Math.max(1, beat.z - beat.a);
+  const zoom = interpolate(bp, [0, 1], [c0.z * CREEP, c1.z]) * creep(q);
+  const fx = interpolate(bp, [0, 1], [c0.fx, c1.fx]), fy = interpolate(bp, [0, 1], [c0.fy, c1.fy]);
+  // pan the focus to the centre only as far as the zoomed video still covers the chart box (a video has nothing past its edge)
+  const tx = Math.max(src.w * (1 - zoom), Math.min(0, src.w / 2 - zoom * fx)), ty = Math.max(src.h * (1 - zoom), Math.min(0, src.h / 2 - zoom * fy));
+  const cam = beat?.camera?.box && beat.camera;
+  const zk = cam && cam.kind !== 'spotlight' ? bp * io(c01((beat.z - now) / EASE_MS)) : 0;
+  const spot = cam?.kind === 'spotlight' ? io(c01((now - beat.a) / 600)) * io(c01((beat.z - now) / 600)) : 0;
+  // source px -> screen px (push + camera), for chips drawn outside the zoomed layer
+  const toScreen = ([x, y]) => [left + sc * (tx + zoom * x), top + sc * (ty + zoom * y)];
   const box = { left, top, width: src.w * sc, height: src.h * sc };
   // hold signal: first frame of a hold on a new frame (predict flashes too: "the freeze flash when the question lands")
   const t0 = now - beat.a, signal = beat.mode === 'hold' && beat.cut;
@@ -97,9 +130,20 @@ export const PGPresentation = (p) => {
 
   return (
     <AbsoluteFill style={{ background: INK, overflow: 'hidden' }}>
-      <div style={{ position: 'absolute', left, top, width: src.w, height: src.h, overflow: 'hidden',
-        transform: `translateX(${shake}px) scale(${sc})`, transformOrigin: '0 0' }}>
-        <div style={{ position: 'absolute', inset: 0, transform: `translate(${tx}px, ${ty}px) scale(${zoom})`, transformOrigin: `${ox}px ${oy}px`,
+      {/* FLOOR ambient: the beat's own frame, blurred and dimmed, fills the frame behind the chart (prototype .ambient:
+          blur 38 px, brightness .57). Drawn at 1/4 size and scaled up: the same look for a fraction of the blur cost. */}
+      <div style={{ position: 'absolute', left: -W * 0.1, top: -H * 0.1, width: W * 0.3, height: H * 0.3, transform: 'scale(4)', transformOrigin: '0 0',
+        filter: 'blur(9px) brightness(.55) saturate(.85)' }}>
+        {beats.map((b) => (
+          <Sequence key={`amb.${b.id}`} from={f(b.a)} durationInFrames={Math.max(1, f(b.z) - f(b.a))} layout="none">
+            <Freeze frame={0}><Clip src={p.video} from={f(b.from_ms)} cover /></Freeze>
+          </Sequence>
+        ))}
+      </div>
+      <AbsoluteFill style={{ background: 'linear-gradient(90deg,rgba(9,15,25,.45),transparent 18%,transparent 82%,rgba(9,15,25,.45))' }} />
+      <div style={{ position: 'absolute', left, top, width: src.w, height: src.h, overflow: 'hidden', borderRadius: 10 / sc,
+        boxShadow: '0 25px 60px rgba(0,0,0,.55)', transform: `translateX(${shake}px) scale(${sc})`, transformOrigin: '0 0' }}>
+        <div style={{ position: 'absolute', inset: 0, transform: `translate(${tx}px, ${ty}px) scale(${zoom})`, transformOrigin: '0 0',
           filter: filt || undefined }}>
           {beats.map((b) => (
             <Sequence key={b.id} from={f(b.a)} durationInFrames={Math.max(1, f(b.z) - f(b.a))} layout="none">
@@ -122,8 +166,8 @@ export const PGPresentation = (p) => {
       {zk > 0 && <div style={{ position: 'absolute', ...box, background: `radial-gradient(circle at 50% 50%, rgba(18,24,34,0) ${box.height * 0.3}px, rgba(18,24,34,${(0.25 * zk).toFixed(3)}) ${box.height * 0.9}px)` }} />}
       {drama && rwA > 0 && <div style={{ position: 'absolute', ...box, opacity: rwA, background: 'repeating-linear-gradient(0deg, rgba(18,24,34,.07) 0 4px, transparent 4px 12px)' }} />}
       {cam?.text && (() => { // zoom label follows the transformed mark (pop, D.zoom); spotlight label sits beside the mark
-        const [x0, y0, x1] = cam.box, zoomed = cam.kind === 'zoom';
-        const pz = c01((now - beat.a - EASE_MS) / 400), a = zoomed ? pz * (1 - c01((now - (beat.z - EASE_MS - 400)) / 300))
+        const [x0, y0, x1, y1] = cam.box, zoomed = cam.kind === 'zoom', ox = (x0 + x1) / 2, oy = (y0 + y1) / 2;
+        const pz = c01((now - beat.a - CAM_MS) / 400), a = zoomed ? pz * (1 - c01((now - (beat.z - EASE_MS - 400)) / 300))
           : c01((now - beat.a - 500) / 400) * (1 - c01((now - beat.z + 800) / 300));
         const [x, y] = zoomed ? toScreen([ox, y0]) : toScreen([x1, oy]);
         return a > 0 && <KChip bg={zoomed ? KR : KI} size={zoomed ? 32 : 30} style={{ left: x + (zoomed ? 60 : 16), top: y + (zoomed ? 52 : 0), opacity: a,
@@ -135,34 +179,22 @@ export const PGPresentation = (p) => {
       {(() => { const pb = beats[k - 1]; if (!pb?.predict || beat.mode === 'hold') return null; // the answer, as it plays on
         const ag = c01((now - beat.a - 100) / 300), a = ag * (1 - c01((now - beat.a - 2600) / 400)), [x, y] = toScreen(pb.predict.at), up = pb.predict.answer === 'up';
         return a > 0 && <KChip bg={up ? KB : KBEAR} size={36} style={{ left: x + 36, top: y, opacity: a, transform: `translateY(-50%) scale(${popS(ag)})` }}>IT WENT {up ? 'UP' : 'DOWN'}</KChip>; })()}
-      {beat.mode === 'replay' && <KChip bg="rgba(7,16,26,.85)" fg={KCY} size={24} font={MONO} style={{ left: 36, top: 104 }}>
-        <Glyph k="back" /> REPLAY · {((beat.to_ms - beat.from_ms) / (beat.z - beat.a)).toFixed(1)}×</KChip>}
-      {rw && <>
-        {drama && <KChip bg={KR} size={34} style={{ left: 36, top: 104, opacity: rwA }}><Glyph k="rew" /> REWIND</KChip>}
-        <KChip bg="rgba(7,16,26,.85)" fg={KCY} size={24} font={MONO} style={{ right: 36, top: 32, opacity: rwA }}>
-          <Glyph k="back" /> SOURCE {Math.round(beat.from_ms / 1000)} s <Glyph k="to" /> {Math.round(beat.to_ms / 1000)} s</KChip>
-      </>}
+      {/* Owner pt70: no editing-mechanics chips (HELD / REPLAY x / SOURCE s -> s / REWIND). The viewer sees the lesson, not the edit. */}
       {flash > 0 && <AbsoluteFill style={{ background: '#fff', opacity: flash }} />}
-      {/* pause bars drawn, not a glyph: U+275A rendered as tofu on the Railway box (exec 68874) */}
-      {(beat.mode === 'hold' || beat.mode === 'broll') && <Chip text={<>{[0, 1].map((i) => <span key={i} style={{ display: 'inline-block', width: 7, height: 24,
-        background: '#fff', marginRight: i ? 14 : 6, verticalAlign: -2 }} />)}HELD</>} style={{
-          right: railOn && beat.graphic?.treatment === 'spine' ? W - (box.left + box.width) + 24 : 36,
-          top: railOn ? 136 : 32,
-        }} />}
       {beats.map((b, i) => b.graphic && now >= b.a - 400 && now < b.z + 300 && (() => {
-        const L = b.graphic.layout, next = beats[i + 1], seamOut = next?.graphic && next.a === b.z ? next.graphic.seam : null;
-        const box = L?.box ? { x: L.box[0], y: L.box[1], w: L.box[2], h: L.box[3] } : { x: PAD + cw * PUSH + 24, y: 100, w: W - (PAD + cw * PUSH + 24) - 24, h: H - 260 };
+        const next = beats[i + 1], seamOut = next?.graphic && next.a === b.z ? next.graphic.seam : null;
         const P = PRES[b.graphic.treatment];
-        if (P) return <P key={b.id} b={b} now={now} box={box} band={L?.mode === 'band'} railOn={railOn} toScreen={toScreen} video={p.video} src={src} f={f} />;
-        return <Card key={b.id} b={b} now={now} box={box} seamOut={seamOut} />;
+        if (P) return <P key={b.id} b={b} now={now} box={PANEL} band railOn={railOn} toScreen={toScreen} video={p.video} src={src} f={f} />;
+        return <Card key={b.id} b={b} now={now} box={PANEL} seamOut={seamOut} />;
       })())}
       {beats.map((b) => b.contrast && (
         <Sequence key={`c.${b.id}`} from={f(b.a)} durationInFrames={Math.max(1, f(b.z) - f(b.a))} layout="none">
           <Contrast b={b} now={now} video={p.video} src={src} f={f} />
         </Sequence>
       ))}
-      {!endcardOn && p.stack && <Stack cards={p.stack} now={now} />}
-      {railOn ? <Rail r={p.rail} now={now} box={box} /> : (endcardOn || (beat.graphic?.treatment === 'a-chapter' && now < beat.a + 2000)) ? null : <Chapter chapters={p.chapters} now={now} />}
+      {/* ponytail: the running stack gives way to a side card (both want the right column); stack cards return at the next stack beat */}
+      {!endcardOn && push === 0 && p.stack && <Stack cards={p.stack} now={now} />}
+      {railOn ? <Rail r={p.rail} now={now} box={box} /> : (endcardOn || (beat.graphic?.treatment === 'a-chapter' && now < beat.a + CHAPTER_MS)) ? null : <Chapter chapters={p.chapters} now={now} />}
       {promo.blur > 0 && <Product s={promo} />}
       {CUTAWAYS_ENABLED && beats.filter((b) => b.mode === 'broll').map((b) => (
         <Sequence key={`broll.${b.id}`} from={f(b.a)} durationInFrames={Math.max(1, f(b.z) - f(b.a))} layout="none">
@@ -191,9 +223,6 @@ function Broll({ b, fps, assets }) {
     <AbsoluteFill style={{ zIndex: 50, overflow: 'hidden', clipPath: `inset(0 ${(100 - wipe * 100).toFixed(3)}% 0 0)` }}>
       <AbsoluteFill style={{ background: '#101b2e', transform: `translateX(${-whip * W}px)`, filter: `blur(${(whip ** 3 * 24).toFixed(1)}px)` }}>
         {media}
-        <KChip bg="rgba(7,16,26,.85)" fg={GOLD} size={24} font={MONO} style={{ left: 32, top: 48, opacity: wipe * (1 - whip) }}>
-          FULL-SCREEN CLIP · SOURCE PAUSED
-        </KChip>
       </AbsoluteFill>
     </AbsoluteFill>
     {wipe < 1 && <div style={{ position: 'absolute', zIndex: 51, left: wipe * W - 4, top: 0, width: 8, height: H, background: GOLD }} />}
@@ -221,8 +250,8 @@ function Product({ s }) {
   );
 }
 
-const Clip = ({ src, from, rate = 1 }) => (
-  <OffthreadVideo src={url(src)} startFrom={from} playbackRate={rate} muted style={{ width: '100%', height: '100%', display: 'block' }} />
+const Clip = ({ src, from, rate = 1, cover }) => (
+  <OffthreadVideo src={url(src)} startFrom={from} playbackRate={rate} muted style={{ width: '100%', height: '100%', display: 'block', objectFit: cover ? 'cover' : undefined }} />
 );
 
 // ── marks: SVG in source px, strokes in screen px (non-scaling); u = source px per 1080p screen px ─────────
@@ -407,8 +436,7 @@ function Predict({ b, now, box }) {
     <div style={{ position: 'absolute', ...box, background: `rgba(236,239,243,${(0.8 * o).toFixed(3)})` }} />
     <div style={{ position: 'absolute', left: W / 2 - cw / 2, top: 300, width: cw, height: 440, opacity: o, background: '#fff', border: `6px solid ${KI}`,
       borderRadius: 28, boxShadow: '0 16px 36px rgba(0,0,0,.3)', boxSizing: 'border-box' }}>
-      {C(68, <div style={{ fontFamily: MONO, fontSize: 26, fontWeight: 500, color: KG, letterSpacing: 2 }}>PAUSE</div>)}
-      {C(152, <div style={{ fontFamily: BODY, fontSize: 68, fontWeight: 800, color: KI }}>Which way next?</div>)}
+      {C(140,<div style={{ fontFamily: BODY, fontSize: 68, fontWeight: 800, color: KI }}>Which way next?</div>)}
       {[['up', KB, 'UP', -156], ['down', KBEAR, 'DOWN', 156]].map(([g, bg, t, dx]) =>
         <KChip key={g} bg={bg} size={42} style={{ left: cw / 2 + dx, top: 280, transform: 'translate(-50%,-50%)' }}><Glyph k={g} />{t}</KChip>)}
       <div style={{ position: 'absolute', left: cw / 2 - 300, top: 372, width: 600, height: 16, background: KGRID }}>
@@ -566,7 +594,8 @@ function Card({ b, now, box, seamOut }) {
       <div style={{ opacity: pe, transform: `translateY(${(1 - pe) * 24}px)`, fontFamily: font, fontSize: size, fontWeight: weight, lineHeight: 1.15, color: '#fff' }}>
         {g.parts[i].split(/(\s+)/).map((w, j) => {
           if (!w.trim()) return <span key={j}>{w}</span>;
-          const at = g.word_steps?.[i]?.[li++]?.at_ms ?? shownAt(i), reveal = out(c01((now - at) / 260)), wordIndex = wi++;
+          // a part lands whole (words 60 ms apart from the part's cue): waiting for each word to be SAID left half-cards on screen
+          const at = shownAt(i) + 60 * li++, reveal = out(c01((now - at) / 260)), wordIndex = wi++;
           const h = hs.find((s) => norm(w) && (norm(w).startsWith(norm(s.word)) || norm(s.word).startsWith(norm(w))));
           const pop = h ? 1 + 0.12 * Math.max(0, 1 - (now - h.at_ms) / 300) : 1;
           const f = wf ? waterfall(wf.side, wf.t, wordIndex, nWords) : null;
@@ -582,11 +611,11 @@ function Card({ b, now, box, seamOut }) {
   let body;
   if (g.treatment === 'p-title') body = <><Part i={0} size={64} font={HEAD} weight={600} />
     <div style={{ height: 8, marginTop: 18, background: GOLD, width: `${out(c01((now - b.a) / 600)) * 100}%` }} /></>;
-  else if (g.treatment === 'p-compare') body = <div style={{ display: 'flex', gap: 20 }}>{g.parts.slice(0, 2).map((_, i) =>
-    <div key={i} style={{ flex: 1, borderTop: `8px solid ${i ? GREEN : RED}`, paddingTop: 20 }}><Part i={i} size={30} /></div>)}</div>;
+  else if (g.treatment === 'p-compare') body = <div style={{ display: 'flex', gap: 20 }}>{g.parts.slice(0, 2).map((s, i, P) =>
+    <div key={i} style={{ flex: 1, borderTop: `8px solid ${i ? GREEN : RED}`, paddingTop: 20 }}><Part i={i} size={Math.min(...P.map((x) => fitSize(x, (box.w - 90) / 2, 34, 22, 4)))} /></div>)}</div>;
   else body = g.parts.map((_, i) => <React.Fragment key={i}>
     {i > 0 && g.treatment === 'p-diagram' && <div style={{ color: GOLD, fontSize: 40, lineHeight: 1, margin: '8px 0', opacity: out(c01((now - shownAt(i)) / 300)) }}>↓</div>}
-    <div style={{ marginTop: i && g.treatment !== 'p-diagram' ? 22 : 0 }}><Part i={i} size={n > 2 ? 36 : 40} /></div>
+    <div style={{ marginTop: i && g.treatment !== 'p-diagram' ? 22 : 0 }}><Part i={i} size={Math.min(...g.parts.map((x) => fitSize(x, box.w - 70, n > 2 ? 36 : 40, 22, 3)))} /></div>
   </React.Fragment>);
   return (
     <div style={{ position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h, display: 'flex', alignItems: 'center', opacity: e,
@@ -601,11 +630,13 @@ function Card({ b, now, box, seamOut }) {
 // render-props' real word times (m-words); metrics count and fill together (m-countup). No CSS animation: every value is frame-derived.
 const KNAVY = '#1c3560', KGOLD = '#e6b76c', KPANEL = 'rgba(9,24,42,.93)';
 
+// The text lands whole from its first word's cue (words 70 ms apart). Owner pt70: word-by-word on the SPOKEN word left fragments
+// ("RAID THE", "ORDER", "LOCATE") whenever the narration said it differently or the card left first.
 function WordReveal({ text, steps, now, size, color = KNAVY, align = 'center', weight = 800, font = BODY, highlight = -1, style }) {
-  let k = 0;
+  let k = 0; const t0 = Math.min(Infinity, ...(steps || []).map((s) => s?.at_ms).filter(Number.isFinite)), start = t0 === Infinity ? -Infinity : t0;
   return <div style={{ fontFamily: font, fontSize: size, fontWeight: weight, lineHeight: 1.12, color, textAlign: align, ...style }}>
     {String(text).split(/(\s+)/).map((w, i) => { if (!w.trim()) return <span key={i}>{w}</span>;
-      const p = out(c01((now - (steps?.[k]?.at_ms ?? -Infinity)) / 340)), hi = k++ === highlight;
+      const p = out(c01((now - start - 70 * k) / 340)), hi = k++ === highlight;
       return <span key={i} style={{ display: 'inline-block', opacity: p, color: hi ? GOLD : undefined,
         transform: `translateY(${(1 - p) * size * 0.28}px)` }}>{w}</span>; })}
   </div>;
@@ -613,14 +644,16 @@ function WordReveal({ text, steps, now, size, color = KNAVY, align = 'center', w
 const allWordSteps = (b) => b.graphic.word_steps?.flat() || [];
 const CUT_TONE = { neutral: [KNAVY, '#F2F5FA'], warn: ['#C0432F', '#FAE9E4'], confirm: ['#1B8A6B', '#E2F2EA'], tease: [GOLD, '#F6EEDA'] };
 
+// section card: kicker + title land together in the first 0.7 s, hold, then leave; the whole card always reads before it goes
+// (was: title words waited for narration and the card left at 1.5 s, so titles vanished half-written)
 function ChapterCut({ b, now }) {
-  const t = now - b.a, enter = out(seg(t, 100, 600)), leave = io(seg(t, 1500, 2000)); if (t >= 2050) return null;
-  const [num, name] = b.graphic.parts, steps = allWordSteps(b);
-  return <AbsoluteFill style={{ background: '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-    opacity: enter * (1 - leave), transform: `scale(${1 + 0.5 * leave})` }}>
-    <WordReveal text={num} steps={b.graphic.word_steps?.[0]} now={now} size={44} color={GOLD} font={MONO} weight={800} />
-    <WordReveal text={name} steps={b.graphic.word_steps?.[1] || steps} now={now} size={104} color={KNAVY} font={HEAD} weight={700} style={{ marginTop: 28 }} />
-    <div style={{ width: 520 * out(seg(t, 900, 1600)), height: 8, background: GOLD, marginTop: 52 }} />
+  const t = now - b.a, D = Math.min(CHAPTER_MS, b.z - b.a), enter = out(seg(t, 0, 450)), leave = io(seg(t, D - 450, D)); if (t >= D) return null;
+  const [kicker, name] = b.graphic.parts, go = [{ at_ms: b.a + 150 }], size = fitSize(name, 1500, 112, 56, 2);
+  return <AbsoluteFill style={{ background: '#F6F7F4', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+    opacity: enter * (1 - leave), transform: `scale(${1 + 0.12 * leave})` }}>
+    {kicker && <div style={{ fontFamily: BODY, fontSize: 34, fontWeight: 800, letterSpacing: 6, color: GOLD, opacity: out(seg(t, 100, 450)) }}>{kicker.toUpperCase()}</div>}
+    <WordReveal text={name.toUpperCase()} steps={go} now={now} size={size} color={KNAVY} font={HEAD} weight={700} style={{ marginTop: 24, maxWidth: 1560 }} />
+    <div style={{ width: 520 * out(seg(t, 500, 1100)), height: 8, background: GOLD, marginTop: 48 }} />
   </AbsoluteFill>;
 }
 
@@ -636,25 +669,27 @@ function TitleCut({ b, now }) {
 
 function StatementCut({ b, now, box }) {
   const t = now - b.a, p = out(seg(t, 200, 650)) * (1 - seg(now, b.z - 350, b.z)), [col, bg] = CUT_TONE[b.graphic.tone] || CUT_TONE.neutral;
-  const w = Math.min(1320, box.w), h = Math.min(360, box.h), x = box.x + (box.w - w) / 2, y = box.y + (box.h - h) / 2;
-  return <div style={{ position: 'absolute', left: x, top: y, width: w, minHeight: h, boxSizing: 'border-box', padding: '54px 60px', opacity: p,
-    transform: `translateY(${(1 - p) * 26}px)`, background: bg, border: `4px solid ${col}`, borderLeftWidth: 14, borderRadius: 16, boxShadow: '0 18px 44px rgba(0,0,0,.28)' }}>
-    <Label col={col}>TONE: {b.graphic.tone.toUpperCase()}</Label>
-    <WordReveal text={b.graphic.parts.join(' ')} steps={allWordSteps(b)} now={now} size={Math.min(62, w / 19)} color={KI} align="left" style={{ marginTop: 38 }} />
+  const w = box.w, text = b.graphic.parts.join(' ');
+  return <div style={{ position: 'absolute', left: box.x, top: box.y, width: w, height: box.h, display: 'flex', alignItems: 'center', opacity: p, transform: `translateY(${(1 - p) * 26}px)` }}>
+    <div style={{ width: '100%', boxSizing: 'border-box', padding: '48px 44px', background: bg, border: `4px solid ${col}`, borderLeftWidth: 14, borderRadius: 16, boxShadow: '0 18px 44px rgba(0,0,0,.28)' }}>
+      <WordReveal text={text} steps={allWordSteps(b)} now={now} size={fitSize(text, w - 116, 56, 30, 5)} color={KI} align="left" />
+    </div>
   </div>;
 }
 
 function ListCut({ b, now, box }) {
-  const g = b.graphic, n = g.parts.length, gap = Math.min(150, (box.h - 160) / n);
-  return <div style={{ position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h, boxSizing: 'border-box', padding: '68px 48px', background: '#f7f8f4', borderLeft: `8px solid ${GOLD}` }}>
-    <Label col={GOLD}>MODE: {g.mode.toUpperCase()}</Label>
-    {g.parts.map((s, i) => { const at = partAt(b, i), p = out(seg(now, at, at + 400)), y = 150 + i * gap;
-      return <div key={i} style={{ position: 'absolute', left: 48, right: 34, top: y, display: 'flex', alignItems: 'center', gap: 28, opacity: p, transform: `translateY(${(1 - p) * 22}px)` }}>
-        {g.mode === 'steps' ? <div style={{ flex: 'none', width: 70, height: 70, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: KNAVY,
-          color: GOLD, fontFamily: MONO, fontSize: 34, fontWeight: 800 }}>{i + 1}</div> : g.mode === 'checks' ? <CheckSvg size={28} col="#1B8A6B" w={8} p={p} />
-          : <div style={{ flex: 'none', width: 34, height: 18, background: GOLD }} />}
-        <WordReveal text={s} steps={g.word_steps?.[i]} now={now} size={Math.min(46, box.w / 14)} color={KI} align="left" />
-      </div>; })}
+  const g = b.graphic, fs = Math.min(...g.parts.map((s) => fitSize(s, box.w - 96 - 98, 42, 26, 2))), o = seg(now, b.a, b.a + 300) * (1 - seg(now, b.z - 300, b.z));
+  return <div style={{ position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h, display: 'flex', alignItems: 'center', opacity: o }}>
+    <div style={{ width: '100%', boxSizing: 'border-box', padding: '48px 48px', background: '#f7f8f4', borderLeft: `8px solid ${GOLD}`, borderRadius: 16,
+      boxShadow: '0 18px 44px rgba(0,0,0,.28)', display: 'flex', flexDirection: 'column', gap: 30 }}>
+      {g.parts.map((s, i) => { const at = partAt(b, i), p = out(seg(now, at, at + 400));
+        return <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 28, opacity: p, transform: `translateY(${(1 - p) * 22}px)` }}>
+          {g.mode === 'steps' ? <div style={{ flex: 'none', width: 70, height: 70, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: KNAVY,
+            color: GOLD, fontFamily: BODY, fontSize: 34, fontWeight: 800 }}>{i + 1}</div> : g.mode === 'checks' ? <CheckSvg size={28} col="#1B8A6B" w={8} p={p} />
+            : <div style={{ flex: 'none', width: 34, height: 18, background: GOLD }} />}
+          <WordReveal text={s} steps={[{ at_ms: at }]} now={now} size={fs} color={KI} align="left" />
+        </div>; })}
+    </div>
   </div>;
 }
 
@@ -678,10 +713,10 @@ function DiagramCut({ b, now }) {
   return <AbsoluteFill style={{ background: 'rgba(255,255,255,.88)' }}>
     <svg width={W} height={H} style={{ position: 'absolute', inset: 0 }}>{pos.slice(1).map((p, i) => { const at = partAt(b, i + 1), q = out(seg(now, at - 450, at));
       return <line key={i} x1={pos[i][0]} y1={pos[i][1]} x2={pos[i + 1][0]} y2={pos[i + 1][1]} stroke="#9FB0C6" strokeWidth={7} strokeDasharray="1 1" pathLength={1} strokeDashoffset={1 - q} />; })}</svg>
-    {g.parts.map((s, i) => { const at = partAt(b, i), p = out(seg(now, at, at + 450)); return <div key={i} style={{ position: 'absolute', left: pos[i][0] - 190, top: pos[i][1] - 72,
-      width: 380, height: 144, boxSizing: 'border-box', padding: '42px 28px', background: '#fff', border: `4px solid ${i === n - 1 ? GOLD : KNAVY}`, borderLeftWidth: 12,
-      borderRadius: 12, opacity: p, transform: `translateY(${(1 - p) * 26}px)`, boxShadow: '0 14px 34px rgba(0,0,0,.18)' }}>
-      <WordReveal text={s} steps={g.word_steps?.[i]} now={now} size={40} color={i === n - 1 ? GOLD : KNAVY} />
+    {g.parts.map((s, i) => { const at = partAt(b, i), p = out(seg(now, at, at + 450)); return <div key={i} style={{ position: 'absolute', left: pos[i][0] - 210, top: pos[i][1] - 80,
+      width: 420, height: 160, boxSizing: 'border-box', padding: '20px 28px', background: '#fff', border: `4px solid ${i === n - 1 ? GOLD : KNAVY}`, borderLeftWidth: 12,
+      borderRadius: 12, opacity: p, transform: `translateY(${(1 - p) * 26}px)`, boxShadow: '0 14px 34px rgba(0,0,0,.18)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <WordReveal text={s} steps={[{ at_ms: at }]} now={now} size={fitSize(s, 420 - 72, 40, 24, 2)} color={i === n - 1 ? '#9A7424' : KNAVY} />
     </div>; })}
   </AbsoluteFill>;
 }
@@ -695,7 +730,7 @@ function CrowdCut({ b, now, toScreen }) {
       return <div key={i} style={{ position: 'absolute', left: x, top: yy - flush * 90, width: 34, height: 54, opacity: p * enter }}>
         <div style={{ width: 26, height: 26, margin: '0 auto', borderRadius: '50%', background: flush > .3 ? '#C0432F' : KNAVY }} />
         <div style={{ width: 30, height: 24, margin: '4px auto 0', background: flush > .3 ? '#C0432F' : KNAVY }} /></div>; })}
-    <KChip bg={flush > .3 ? '#C0432F' : KNAVY} size={30} style={{ left: 125, top: 0, opacity: enter }}>{flush > .3 ? 'HUNTED' : b.graphic.parts[0].toUpperCase()}</KChip>
+    <KChip bg={flush > .3 ? '#C0432F' : KNAVY} size={30} style={{ left: 270, top: 0, opacity: enter, transform: 'translateX(-50%)' }}>{flush > .3 ? 'HUNTED' : b.graphic.parts[0].toUpperCase()}</KChip>
   </div>;
 }
 
@@ -713,15 +748,30 @@ function ChapterRecapCut({ b, now, video, src, f }) {
   </AbsoluteFill>;
 }
 
+// end card (Owner pt70): engagement, never a made-up "watch next". parts = [the comment question, the engagement line,
+// the subscribe / notification line], all restating the outro narration. Comment bubble first, then the subscribe button
+// is pressed (turns SUBSCRIBED) and the bell rings.
 function EndCardCut({ b, now }) {
-  const g = b.graphic, p1 = out(seg(now, b.a + 200, b.a + 1000)), p2 = out(seg(now, b.a + 900, b.a + 1800)), p3 = out(seg(now, b.a + 1700, b.a + 2600));
-  return <AbsoluteFill style={{ background: '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-    <WordReveal text={g.parts[0]} steps={g.word_steps?.[0]} now={now} size={88} color={KNAVY} style={{ marginTop: 210, opacity: p1 }} />
-    <div style={{ width: 1280, minHeight: 200, marginTop: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: KNAVY, opacity: p2, borderRadius: 12 }}>
-      <WordReveal text={g.parts[1]} steps={g.word_steps?.[1]} now={now} size={58} color={GOLD} />
+  const g = b.graphic, t = now - b.a, [ask, line2, line3] = g.parts;
+  const p1 = out(seg(t, 150, 700)), p2 = out(seg(t, 700, 1250)), p3 = out(seg(t, 1250, 1800)), press = seg(t, 2400, 2600), done = t >= 2550;
+  const ring = t > 2800 && t < 4000 ? Math.sin((t - 2800) / 1000 * Math.PI * 8) * 16 * (1 - seg(t, 2800, 4000)) : 0;
+  const Bell = () => <svg width={54} height={54} viewBox="0 0 24 24" style={{ transform: `rotate(${ring}deg)`, transformOrigin: '50% 10%' }}>
+    <path d="M12 2a1.5 1.5 0 0 1 1.5 1.5v.6A6.5 6.5 0 0 1 18.5 10.5v4l2 3v1h-17v-1l2-3v-4A6.5 6.5 0 0 1 10.5 4.1v-.6A1.5 1.5 0 0 1 12 2Zm-2.3 18h4.6a2.3 2.3 0 0 1-4.6 0Z" fill={KNAVY} /></svg>;
+  return <AbsoluteFill style={{ background: '#F6F7F4', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 120 }}>
+    <div style={{ position: 'relative', width: 1400, boxSizing: 'border-box', padding: '46px 64px', background: '#fff', border: `5px solid ${KNAVY}`, borderRadius: 32,
+      boxShadow: '0 18px 44px rgba(0,0,0,.16)', opacity: p1, transform: `translateY(${(1 - p1) * 30}px)`, display: 'flex', alignItems: 'center', gap: 40 }}>
+      <svg width={96} height={96} viewBox="0 0 24 24" style={{ flex: 'none' }}><path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill={GOLD} />
+        <circle cx="8" cy="11" r="1.4" fill="#fff" /><circle cx="12" cy="11" r="1.4" fill="#fff" /><circle cx="16" cy="11" r="1.4" fill="#fff" /></svg>
+      <div style={{ fontFamily: BODY, fontWeight: 800, fontSize: fitSize(ask, 1400 - 128 - 136, 64, 36, 3), lineHeight: 1.18, color: KNAVY }}>{ask}</div>
+      <div style={{ position: 'absolute', left: 120, bottom: -34, width: 56, height: 56, background: '#fff', borderRight: `5px solid ${KNAVY}`, borderBottom: `5px solid ${KNAVY}`, transform: 'rotate(45deg)' }} />
     </div>
-    <div style={{ display: 'flex', gap: 18, marginTop: 72, opacity: p3 }}>{Array.from({ length: 6 }, (_, i) => <div key={i} style={{ width: 80, height: 80, borderRadius: '50%', background: i % 2 ? KNAVY : GOLD }} />)}</div>
-    <WordReveal text={g.parts[2]} steps={g.word_steps?.[2]} now={now} size={38} color={KL} style={{ marginTop: 34, opacity: p3 }} />
+    {line2 && <div style={{ width: 1400, marginTop: 74, fontFamily: BODY, fontWeight: 700, fontSize: fitSize(line2, 1400, 44, 28, 2), lineHeight: 1.25, color: '#26344a', textAlign: 'center', opacity: p2 }}>{line2}</div>}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 36, marginTop: 50, opacity: p3, transform: `translateY(${(1 - p3) * 24}px)` }}>
+      <div style={{ padding: '26px 56px', borderRadius: 60, background: done ? '#E3E6EA' : '#CC0000', color: done ? '#3b4656' : '#fff', fontFamily: BODY, fontWeight: 800,
+        fontSize: 44, letterSpacing: 2, transform: `scale(${1 - 0.08 * Math.sin(press * Math.PI)})`, boxShadow: '0 12px 28px rgba(0,0,0,.18)' }}>{done ? 'SUBSCRIBED' : 'SUBSCRIBE'}</div>
+      <div style={{ width: 104, height: 104, borderRadius: '50%', background: '#fff', border: `4px solid ${KNAVY}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Bell /></div>
+      {line3 && <div style={{ maxWidth: 640, fontFamily: BODY, fontWeight: 700, fontSize: fitSize(line3, 640, 36, 24, 2), lineHeight: 1.25, color: '#26344a' }}>{line3}</div>}
+    </div>
   </AbsoluteFill>;
 }
 
@@ -751,7 +801,8 @@ function ScreenArrow({ x1, y1, x2, y2, p, col, w = 8, dash }) {
     <path d="M10,0 L-26,-18 L-26,18 Z" fill={col} transform={`translate(${x} ${y}) rotate(${a})`} />
   </svg>;
 }
-const Label = ({ col, children, style }) => <div style={{ fontFamily: MONO, fontSize: 24, fontWeight: 700, letterSpacing: 2, color: col, ...style }}>{children}</div>;
+// card kicker (prototype eyebrow: bold, tracked caps); was the mono font, which read as a debug label
+const Label = ({ col, children, style }) => <div style={{ fontFamily: BODY, fontSize: 24, fontWeight: 800, letterSpacing: 4, color: col, ...style }}>{children}</div>;
 const CheckSvg = ({ size, col, w, p = 1 }) => (
   <svg width={size * 2.4} height={size * 2.4} viewBox="-12 -12 24 24" style={{ flex: 'none', overflow: 'visible' }}>
     <path d="M-10,0 L-3,7 L10,-8" pathLength={1} strokeDasharray="1 1" strokeDashoffset={1 - p} fill="none" stroke={col} strokeWidth={w * 10 / size}
@@ -762,16 +813,20 @@ const partAt = (b, i) => b.graphic.steps?.find((s) => s.kind === 'part' && s.par
 // definition (D.definition): a light term card in the panel, a dashed navy leader from its side to mark 0 (when there is one)
 function Definition({ b, now, box, toScreen }) {
   const t = now - b.a, p = out(seg(t, 1000, 1500)) * (1 - io(seg(now, b.z - 400, b.z))); if (p <= 0) return null;
-  const [term, ...meaning] = b.graphic.parts, x = box.x + (1 - p) * 80, y = Math.max(box.y, H / 2 - 260), w = box.w;
-  const pin = b.graphic.pin && toScreen(b.graphic.pin);
+  const [term, ...meaning] = b.graphic.parts, x = box.x + (1 - p) * 80, w = box.w, inner = w - 88;
+  const ts = fitSize(term, inner, 84, 36, 2), ms = Math.min(...meaning.map((s) => fitSize(s, inner - 30, 36, 24, 3)), 36);
+  const y = box.y + box.h / 2 - 250, pin = b.graphic.pin && toScreen(b.graphic.pin);
   return <>
-    {pin && <div style={{ opacity: p }}><ScreenArrow x1={x} y1={y + 280} x2={pin[0] + 12} y2={pin[1]} p={io(seg(t, 1500, 2100))} col={KNAVY} w={5} dash="10 10" /></div>}
-    <div style={{ position: 'absolute', left: x, top: y, width: w, minHeight: 500, boxSizing: 'border-box', padding: '40px 44px', opacity: p, background: '#eff0eb',
-      borderRadius: 20, boxShadow: '0 16px 36px rgba(0,0,0,.3)' }}>
-      <Label col="#52728f">NEW TERM</Label>
-      <div style={{ fontFamily: BODY, fontWeight: 800, fontSize: Math.min(88, w / 6.5), color: KNAVY, marginTop: 22, lineHeight: 1.1 }}>{term}</div>
-      <div style={{ fontFamily: BODY, fontWeight: 500, fontSize: Math.min(34, w / 17), color: '#26344a', marginTop: 26, lineHeight: 1.5 }}>{meaning.join(' ')}</div>
-      <div style={{ width: 128, height: 8, background: KNAVY, marginTop: 30 }} />
+    {pin && <div style={{ opacity: p }}><ScreenArrow x1={x} y1={y + 250} x2={pin[0] + 12} y2={pin[1]} p={io(seg(t, 1500, 2100))} col={KNAVY} w={5} dash="10 10" /></div>}
+    <div style={{ position: 'absolute', left: x, top: box.y, width: w, height: box.h, display: 'flex', alignItems: 'center', opacity: p }}>
+      <div style={{ width: '100%', boxSizing: 'border-box', padding: '44px 44px 40px', background: '#eff0eb', borderRadius: 20, boxShadow: '0 16px 36px rgba(0,0,0,.3)' }}>
+        <Label col="#52728f">NEW TERM</Label>
+        <div style={{ fontFamily: BODY, fontWeight: 800, fontSize: ts, color: KNAVY, marginTop: 18, lineHeight: 1.08 }}>{term}</div>
+        <div style={{ marginTop: 28, display: 'flex', flexDirection: 'column', gap: 14 }}>{meaning.map((s, i) =>
+          <div key={i} style={{ display: 'flex', gap: 16, alignItems: 'baseline', fontFamily: BODY, fontWeight: 700, fontSize: ms, color: '#26344a', lineHeight: 1.3 }}>
+            <span style={{ flex: 'none', width: 14, height: 14, borderRadius: 3, background: GOLD, transform: 'translateY(-2px)' }} />{s}</div>)}</div>
+        <div style={{ width: 128, height: 8, background: KNAVY, marginTop: 32 }} />
+      </div>
     </div>
   </>;
 }
@@ -820,16 +875,16 @@ function Quick({ b, now, box, band, railOn, toScreen }) {
   const t = now - b.a, a = seg(t, 800, 1100) * (1 - seg(now, b.z - 400, b.z)); if (a <= 0) return null;
   const cw = band ? box.w : 580, pin = b.graphic.pin && toScreen(b.graphic.pin);
   const x0 = band ? box.x : pin && pin[0] > W / 2 ? 40 : W - 620;
-  const y0 = (railOn ? 280 : 220) - 40 * out(seg(t, 800, 1100)), [q, ans] = b.graphic.parts;
+  const [q, ans] = b.graphic.parts, CH = 500, y0 = (band ? box.y + (box.h - CH) / 2 : railOn ? 280 : 220) - 40 * out(seg(t, 800, 1100));
   const rv = seg(t, 4600, 4900), cd = seg(t, 1600, 4600), R = 56, C = 2 * Math.PI * R;
   const leaderX = pin && pin[0] < x0 + cw / 2 ? x0 + 20 : x0 + cw - 20;
   return <>
-    {pin && <ScreenArrow x1={leaderX} y1={y0 + 340} x2={pin[0] + 24} y2={pin[1]} p={io(seg(t, 1200, 1700)) * a} col={KL} w={6} dash="14 14" />}
-    <div style={{ position: 'absolute', left: x0, top: y0, width: cw, height: 440, boxSizing: 'border-box', padding: '40px 40px 30px', opacity: a, overflow: 'hidden', background: '#fff',
+    {pin && <ScreenArrow x1={leaderX} y1={y0 + 380} x2={pin[0] + 24} y2={pin[1]} p={io(seg(t, 1200, 1700)) * a} col={KL} w={6} dash="14 14" />}
+    <div style={{ position: 'absolute', left: x0, top: y0, width: cw, height: CH, boxSizing: 'border-box', padding: '40px 40px 30px', opacity: a, overflow: 'hidden', background: '#fff',
       border: `6px solid ${KI}`, borderRadius: 24, boxShadow: '0 16px 36px rgba(0,0,0,.3)' }}>
       <Label col={KB}>QUICK CHECK</Label>
-      <div style={{ fontFamily: BODY, fontWeight: 800, fontSize: Math.min(54, cw / 9.5), color: KI, marginTop: 16, lineHeight: 1.15 }}>{q}</div>
-      <div style={{ position: 'absolute', left: 40, right: 40, top: 190, height: 190 }}>
+      <div style={{ fontFamily: BODY, fontWeight: 800, fontSize: fitSize(q, cw - 92, 48, 28, 2), color: KI, marginTop: 16, lineHeight: 1.15 }}>{q}</div>
+      <div style={{ position: 'absolute', left: 40, right: 40, top: 230, height: 230, display: 'flex', alignItems: 'center' }}>
         {rv < 1 && <svg width={R * 2 + 12} height={R * 2 + 12} style={{ position: 'absolute', left: '50%', top: 0, opacity: 1 - rv, transform: 'translateX(-50%)' }}>
           <circle cx={R + 6} cy={R + 6} r={R} fill="none" stroke={KGRID} strokeWidth={12} />
           <circle cx={R + 6} cy={R + 6} r={R} fill="none" stroke={KB} strokeWidth={12} strokeDasharray={`${C * (1 - cd)} ${C}`} transform={`rotate(-90 ${R + 6} ${R + 6})`} />
@@ -837,7 +892,7 @@ function Quick({ b, now, box, band, railOn, toScreen }) {
         </svg>}
         {rv > 0 && <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', opacity: rv }}>
           <CheckSvg size={22} col={KB} w={10} p={rv} />
-          <div style={{ fontFamily: BODY, fontWeight: 600, fontSize: Math.min(30, cw / 16), color: KI, lineHeight: 1.35 }}>{ans}</div>
+          <div style={{ fontFamily: BODY, fontWeight: 700, fontSize: fitSize(ans, cw - 160, 34, 22, 4), color: KI, lineHeight: 1.3 }}>{ans}</div>
         </div>}
       </div>
     </div>
@@ -847,14 +902,17 @@ function Quick({ b, now, box, band, railOn, toScreen }) {
 // common mistake (D.mistake): red-edged card slides in from the left, pulses once; the candle's red ring = mark 0 (tone warn)
 function Mistake({ b, now, box, band, railOn }) {
   const t = now - b.a, p = out(seg(t, 800, 1300)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
-  const w = band ? box.w : 680, x = band ? box.x + (1 - p) * -80 : -w - 40 + (w + 76) * p, pl = 1 + 0.05 * Math.sin(seg(t, 1300, 1900) * Math.PI);
-  return <div style={{ position: 'absolute', left: x, top: band ? H / 2 - 84 : railOn ? 196 : 140, width: w, minHeight: 168, display: 'flex', background: '#fff', border: `6px solid ${KR}`,
-    borderRadius: 16, boxShadow: '0 16px 36px rgba(0,0,0,.3)', transform: `scale(${pl})`, overflow: 'hidden', boxSizing: 'border-box' }}>
-    <div style={{ flex: 'none', width: 106, background: KR, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <svg width={52} height={60} viewBox="0 0 52 60"><path d="M6,6 L46,54 M46,6 L6,54" stroke="#fff" strokeWidth={10} strokeLinecap="round" /></svg></div>
-    <div style={{ padding: '26px 30px' }}>
-      <Label col={KR} style={{ fontWeight: 500 }}>COMMON MISTAKE</Label>
-      <div style={{ fontFamily: BODY, fontWeight: 800, fontSize: Math.min(36, (w - 160) / 12), color: KI, marginTop: 10, lineHeight: 1.2 }}>{b.graphic.parts.join(' ')}</div>
+  const w = band ? box.w : 680, x = band ? box.x + (1 - p) * 80 : -w - 40 + (w + 76) * p, pl = 1 + 0.03 * Math.sin(seg(t, 1300, 1900) * Math.PI);
+  const P = b.graphic.parts, fs = Math.min(...P.map((s) => fitSize(s, w - 106 - 64, 36, 24, 3)));
+  return <div style={{ position: 'absolute', left: x, top: band ? box.y : railOn ? 196 : 140, width: w, height: band ? box.h : undefined, display: 'flex', alignItems: 'center', opacity: band ? c01(p * 1.5) : 1 }}>
+    <div style={{ width: '100%', minHeight: 168, display: 'flex', background: '#fff', border: `6px solid ${KR}`,
+      borderRadius: 16, boxShadow: '0 16px 36px rgba(0,0,0,.3)', transform: `scale(${pl})`, overflow: 'hidden', boxSizing: 'border-box' }}>
+      <div style={{ flex: 'none', width: 106, background: KR, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <svg width={52} height={60} viewBox="0 0 52 60"><path d="M6,6 L46,54 M46,6 L6,54" stroke="#fff" strokeWidth={10} strokeLinecap="round" /></svg></div>
+      <div style={{ padding: '30px 32px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Label col={KR}>COMMON MISTAKE</Label>
+        {P.map((s, i) => <div key={i} style={{ fontFamily: BODY, fontWeight: 800, fontSize: fs, color: i ? '#1B6B52' : KI, lineHeight: 1.22 }}>{s}</div>)}
+      </div>
     </div>
   </div>;
 }
@@ -866,7 +924,7 @@ function Rule({ b, now }) {
     <div style={{ width: 1080, minHeight: 360, boxSizing: 'border-box', padding: '48px 60px', opacity: k, transform: `scale(${0.92 + 0.08 * k})`, background: '#f0f2ec',
       borderRadius: 20, boxShadow: '0 16px 36px rgba(0,0,0,.3)', textAlign: 'center' }}>
       <Label col="#52728f">THE RULE</Label>
-      {b.graphic.parts.map((s, i) => <div key={i} style={{ fontFamily: BODY, fontWeight: 800, fontSize: 64, color: KNAVY, lineHeight: 1.25, marginTop: i ? 0 : 22 }}>{s}</div>)}
+      {b.graphic.parts.map((s, i, P) => <div key={i} style={{ fontFamily: BODY, fontWeight: 800, fontSize: Math.min(...P.map((x) => fitSize(x, 960, 60, 32, 2))), color: KNAVY, lineHeight: 1.25, marginTop: i ? 14 : 22 }}>{s}</div>)}
     </div>
   </AbsoluteFill>;
 }
@@ -875,15 +933,17 @@ function Rule({ b, now }) {
 function Tease({ b, now, box, band, railOn }) {
   const t = now - b.a, p = out(seg(t, 1000, 1500)) * (1 - io(seg(now, b.z - 500, b.z))); if (p <= 0) return null;
   const w = band ? box.w : 860, x = band ? box.x : -w - 40 + (w + 76) * p, drain = 1 - seg(t, 1500, b.z - b.a - 500);
-  return <div style={{ position: 'absolute', left: x, top: band ? H - 330 : railOn ? 196 : 140, width: w, height: 168, background: KI, borderRadius: 16, overflow: 'hidden', opacity: band ? p : 1 }}>
-    <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 14, background: KB }} />
-    <Label col="#5fb0ff" style={{ position: 'absolute', left: 48, top: 34, fontWeight: 500 }}>COMING UP</Label>
-    <div style={{ position: 'absolute', left: 48, top: 74, right: 110, fontFamily: BODY, fontWeight: 800, fontSize: Math.min(48, (w - 120) / 13), color: '#fff',
-      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.graphic.parts.join(' ')}</div>
-    <svg width={40} height={52} viewBox="0 0 40 52" style={{ position: 'absolute', right: 30, top: 54 + Math.sin((now / 1000) * 9) * 10 }}>
-      <path d="M20,4 L20,40 M6,28 L20,44 L34,28" stroke={KGOLD} strokeWidth={7} fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
-    <div style={{ position: 'absolute', left: 48, top: 144, width: w - 120, height: 6, background: 'rgba(255,255,255,.18)' }}>
-      <div style={{ width: `${drain * 100}%`, height: '100%', background: KB }} /></div>
+  const text = b.graphic.parts.join(' ');
+  return <div style={{ position: 'absolute', left: x, top: band ? box.y : railOn ? 196 : 140, width: w, height: band ? box.h : undefined, display: 'flex', alignItems: 'center', opacity: band ? p : 1 }}>
+    <div style={{ position: 'relative', width: '100%', boxSizing: 'border-box', padding: '34px 110px 40px 48px', background: KI, borderRadius: 16, overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 14, background: KB }} />
+      <Label col="#5fb0ff">COMING UP</Label>
+      <div style={{ marginTop: 12, fontFamily: BODY, fontWeight: 800, fontSize: fitSize(text, w - 158, 46, 26, 3), lineHeight: 1.18, color: '#fff' }}>{text}</div>
+      <svg width={40} height={52} viewBox="0 0 40 52" style={{ position: 'absolute', right: 34, top: '50%', marginTop: -26 + Math.sin((now / 1000) * 9) * 10 }}>
+        <path d="M20,4 L20,40 M6,28 L20,44 L34,28" stroke={KGOLD} strokeWidth={7} fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      <div style={{ position: 'absolute', left: 48, bottom: 16, width: w - 158, height: 6, background: 'rgba(255,255,255,.18)' }}>
+        <div style={{ width: `${drain * 100}%`, height: '100%', background: KB }} /></div>
+    </div>
   </div>;
 }
 
@@ -930,15 +990,17 @@ function Recap({ b, now, video, src, f }) {
 function Stack({ cards, now }) {
   const shown = cards.filter((c) => c.a <= now); if (!shown.length || now >= shown.at(-1).z) return null;
   let s0 = shown.length - 1; while (s0 > 0 && shown[s0 - 1].z > shown[s0].a) s0--; // start of this visible run
-  const o = seg(now, shown[s0].a, shown[s0].a + 300) * (1 - seg(now, shown.at(-1).z - 300, shown.at(-1).z)), w = 580;
+  const o = seg(now, shown[s0].a, shown[s0].a + 300) * (1 - seg(now, shown.at(-1).z - 300, shown.at(-1).z));
+  // card grows to its text (max 820 px); text sized to one line, never cut with "..."
   return <div style={{ opacity: o }}>{shown.map((c, i) => {
+    const fs = fitSize(c.text, 820 - 110, 32, 20, 1), w = Math.min(820, Math.ceil(c.text.length * fs * 0.66) + 110);
     const p = i >= s0 ? out(seg(now, c.a, c.a + 400)) : 1; let off = 0;
     for (let j = i + 1; j < shown.length; j++) off += (j >= s0 ? out(seg(now, shown[j].a, shown[j].a + 400)) : 1) * 96;
     return <div key={i} style={{ position: 'absolute', left: W + 40 + (W - 36 - w - W - 40) * p, top: 700 - off, width: w, height: 80, opacity: p, background: '#fff',
       border: `4px solid ${KGRID}`, borderRadius: 16, boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 18, paddingLeft: 22, boxShadow: '0 10px 24px rgba(0,0,0,.25)' }}>
       <div style={{ flex: 'none', width: 44, height: 44, borderRadius: 22, background: KB, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <CheckSvg size={10} col="#fff" w={6} /></div>
-      <div style={{ fontFamily: BODY, fontWeight: 600, fontSize: Math.min(32, (w - 100) / 12), color: KI, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.text}</div>
+      <div style={{ fontFamily: BODY, fontWeight: 700, fontSize: fs, color: KI, whiteSpace: 'nowrap' }}>{c.text}</div>
     </div>; })}</div>;
 }
 
