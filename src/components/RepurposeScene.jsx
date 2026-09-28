@@ -53,8 +53,10 @@ import React from 'react';
 import {
   AbsoluteFill,
   Audio,
+  Easing,
   Freeze,
   Img,
+  interpolate,
   OffthreadVideo,
   Sequence,
   staticFile,
@@ -152,6 +154,8 @@ export const RepurposeScene = ({ sceneJson }) => {
             ctaUrl={ctaUrl}
             fps={fps}
             brand={brand}
+            sourceW={sceneJson.source_width}
+            sourceH={sceneJson.source_height}
             layout={layout}
             prevFx={segmentsWithFrames[i - 1]?.type === 'flash' ? 'flash' : null}
             whipOut={segmentsWithFrames[i + 1]?.fx === 'whip'}
@@ -349,6 +353,89 @@ function RecapCards({ cards, t, srcUrl, fps, layout }) {
 }
 
 
+// ── Chart Marks (V0.1, Owner 2026-09-28: marks + zoom on every pause) ──────────
+// seg.chart = CE_Agent_Charts' render for this pause: { frame_ms, W, H, crop:[x0,y0,x1,y1], marks } in the
+// solver's working px, mark times in ms from the pause start. The solver owns every anchor and every tag text;
+// this only maps solver px -> canvas px. Style = the approved long-form label library (RepurposeLongForm
+// ChartOverlay, STEP2_GATE_REGISTER) — copied, not imported, so long form stays untouched.
+const MARK_INK = '#E8590C';
+const MARK_ZONE = { demand: '#0FA3B1', supply: '#D6336C' };
+const MARK_STYLE = {
+  bos: { dash: 'dash' }, choch: { dash: 'dash' }, liquidity_level: { dash: 'dash' }, inducement: { dash: 'dot' },
+  order_block: { box: true }, fvg_box: { box: true, dash: 'dash', colour: '#786EC8' },
+  range_box: { box: true, dash: 'dash', colour: '#8A96A0' }, expected_path: { dash: 'dash', slow: true },
+};
+const MARK_TAG_BELOW = /^(SSL|EQL|Sell|Equal lows|Discount)/i;
+const CAM_MS = 850, CAM_MAX = 1.5;   // prototype camera ease; pt72b preview push-in 1.5x
+
+// where the contained source sits on the canvas, and solver px -> canvas px
+function chartGeom(chart, sw, sh) {
+  const dw = Math.min(CANVAS_W, (CANVAS_H * sw) / sh), dh = (dw * sh) / sw;
+  const left = (CANVAS_W - dw) / 2, top = (CANVAS_H - dh) / 2, k = dw / chart.W;
+  const [x0, y0, x1, y1] = chart.crop || [0, 0, chart.W, chart.H];
+  return { dw, dh, left, top, k, P: (pt) => [left + pt[0] * k, top + pt[1] * k],
+    crop: [left + x0 * k, top + y0 * k, left + x1 * k, top + y1 * k] };
+}
+
+// push-in on the solver's crop, eased over the first 850 ms of the pause, then held
+function ChartZoom({ chart, sw, sh, t, children }) {
+  if (!chart || !sw || !sh) return <AbsoluteFill>{children}</AbsoluteFill>;
+  const g = chartGeom(chart, sw, sh), [cx0, cy0, cx1, cy1] = g.crop;
+  const z = Math.max(1, Math.min(CAM_MAX, g.dw / ((cx1 - cx0) * 1.15)));
+  const p = easeOut3((t * 1000) / CAM_MS), s = 1 + (z - 1) * p;
+  // scaling about the crop centre keeps the crop where it is and never pulls the video edge inward
+  return (
+    <AbsoluteFill style={{ transformOrigin: `${(cx0 + cx1) / 2}px ${(cy0 + cy1) / 2}px`, transform: `scale(${s.toFixed(4)})` }}>
+      {children}
+    </AbsoluteFill>
+  );
+}
+
+function ChartMarks({ chart, sw, sh, tMs }) {
+  if (!sw || !sh) return null;
+  const { P } = chartGeom(chart, sw, sh);
+  const tags = [];
+  const shapes = chart.marks.map((m, i) => {
+    const st = MARK_STYLE[m.label] || {};
+    const col = st.box ? MARK_ZONE[m.tone] || st.colour || MARK_INK : st.colour || MARK_INK;
+    const start = (m.at_ms || 0) + (m.stagger || 0) * 90, dur = st.slow ? 900 : 520;
+    const p = interpolate(tMs, [start, start + dur], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) });
+    if (p <= 0) return null;
+    const A = m.from && m.from.point ? P(m.from.point) : null, B = m.to && m.to.point ? P(m.to.point) : null;
+    if (!A && !B) return null;
+    const w = 5, dash = st.dash === 'dot' ? '3 9' : st.dash === 'dash' ? '18 13' : undefined, key = m.id || `m${i}`;
+    const tag = (x, y, below) => m.text && tags.push({ key, x, y, below, col, text: m.text, o: p });
+    if (m.kind === 'highlight' && A && B && (st.box || Math.abs(B[1] - A[1]) > 14)) {
+      const bx = Math.min(A[0], B[0]), by = Math.min(A[1], B[1]), bw = Math.abs(B[0] - A[0]), bh = Math.abs(B[1] - A[1]);
+      tag(bx + bw / 2, by, false);
+      return <rect key={key} x={bx} y={by} width={Math.max(1, bw * p)} height={bh} fill={col} fillOpacity={0.18} stroke={col} strokeWidth={w} strokeDasharray={dash} />;
+    }
+    if ((m.kind === 'highlight' || m.kind === 'arrow') && A && B) {
+      tag((A[0] + B[0]) / 2, Math.min(A[1], B[1]), MARK_TAG_BELOW.test(m.text || ''));
+      return <line key={key} x1={A[0]} y1={A[1]} x2={A[0] + (B[0] - A[0]) * p} y2={A[1] + (B[1] - A[1]) * p} stroke={col} strokeWidth={w} strokeLinecap="round" strokeDasharray={dash} />;
+    }
+    if (m.kind === 'ring') {
+      const at = B || A, rx = m.label === 'candle_highlight' ? 30 : 22, ry = 30, c = 2 * Math.PI * ((rx + ry) / 2);
+      tag(at[0], at[1] - ry, false);
+      return <ellipse key={key} cx={at[0]} cy={at[1]} rx={rx} ry={ry} fill="none" stroke={col} strokeWidth={w} strokeDasharray={c} strokeDashoffset={c * (1 - p)} />;
+    }
+    return null;   // fail closed: a kind this pause renderer does not draw is skipped, never approximated
+  });
+  return (
+    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+      <svg width={CANVAS_W} height={CANVAS_H} viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`} style={{ position: 'absolute', inset: 0 }}>{shapes}</svg>
+      {tags.map((tg) => (
+        <div key={tg.key} style={{
+          position: 'absolute', left: tg.x, top: tg.y, transform: `translate(-50%, ${tg.below ? '28%' : '-128%'})`,
+          opacity: tg.o, fontFamily: 'Inter, Arial, sans-serif', fontWeight: 800, fontSize: 30, lineHeight: 1.15,
+          color: tg.col, background: '#FFFFFF', border: `3px solid ${tg.col}`, borderRadius: 8, padding: '4px 11px', whiteSpace: 'nowrap',
+        }}>{tg.text}</div>
+      ))}
+    </AbsoluteFill>
+  );
+}
+
+
 // ── FreezeSegment ──────────────────────────────────────────────────────────────
 // Video frozen on seg.timestamp for the full segment duration.
 // Voiceover audio plays from frame 0 of this Sequence.
@@ -358,8 +445,10 @@ function RecapCards({ cards, t, srcUrl, fps, layout }) {
 // KEY: <Freeze frame={N}> makes ALL its children behave as if the current
 // Remotion frame is N. OffthreadVideo inside Freeze renders at time N/fps.
 // Audio and captions are OUTSIDE Freeze so they advance normally.
-function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, layout, prevFx, whipOut }) {
-  const frozenVideoFrame = Math.round(seg.timestamp * fps);
+function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, sourceW, sourceH, layout, prevFx, whipOut }) {
+  // V0.1 Chart Marks: a solved pause freezes on the solver's proving frame (may differ from the pause timestamp).
+  const chart = seg.chart && seg.chart.marks && seg.chart.marks.length ? seg.chart : null;
+  const frozenVideoFrame = Math.round((chart ? chart.frame_ms / 1000 : seg.timestamp) * fps);
   // Called outside the Sequence → absolute frame; make it segment-relative.
   const t     = (useCurrentFrame() - seg.frameStart) / fps;
   const promo = productPopupState(t, productWindow(seg.captions, seg.duration));
@@ -382,19 +471,22 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, layout, prevFx, whipOu
 
       {/* ── FROZEN VIDEO FRAME (blurs while the product card is up) ───────── */}
       <AbsoluteFill style={filters.length || wOut > 0 ? videoStyle : undefined}>
-        <Freeze frame={frozenVideoFrame}>
-          <AbsoluteFill>
-            <OffthreadVideo
-              src={srcUrl}
-              volume={0}
-              style={{
-                width:     '100%',
-                height:    '100%',
-                objectFit: 'contain',
-              }}
-            />
-          </AbsoluteFill>
-        </Freeze>
+        <ChartZoom chart={chart} sw={sourceW} sh={sourceH} t={t}>
+          <Freeze frame={frozenVideoFrame}>
+            <AbsoluteFill>
+              <OffthreadVideo
+                src={srcUrl}
+                volume={0}
+                style={{
+                  width:     '100%',
+                  height:    '100%',
+                  objectFit: 'contain',
+                }}
+              />
+            </AbsoluteFill>
+          </Freeze>
+          {chart && <ChartMarks chart={chart} sw={sourceW} sh={sourceH} tMs={t * 1000} />}
+        </ChartZoom>
       </AbsoluteFill>
 
       {/* ── RETENTION EFFECTS (beneath the pop-up and captions) ───────────── */}
