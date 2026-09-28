@@ -126,6 +126,9 @@ export const RepurposeScene = ({ sceneJson }) => {
     frameOffset += frameCount;
   }
   const layout = bandLayout(sceneJson.source_width, sceneJson.source_height);
+  // V1 hook pool: the headline owns the top band during the hook, the title pill comes in after it.
+  const hookSeg = segmentsWithFrames.find((s) => s.hook_visual);
+  const titleFrom = hookSeg ? hookSeg.frameStart + hookSeg.frameCount : 0;
 
   return (
     <AbsoluteFill style={{ overflow: 'hidden', background: '#FFFFFF' }}>
@@ -168,7 +171,7 @@ export const RepurposeScene = ({ sceneJson }) => {
           Dark pill overlay pinned to top of canvas.
           Renders on any aspect ratio — no letterbox dependency. */}
       {lessonTitle && (
-        <LessonTitle title={lessonTitle} brand={brand} />
+        <LessonTitle title={lessonTitle} brand={brand} from={titleFrom} />
       )}
 
       {/* ── BACKGROUND MUSIC ────────────────────────────────────────────────
@@ -267,6 +270,34 @@ function NextTease({ text, t, dur, layout, brand }) {
     }}>
       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</span>
       <span style={{ transform: `translateY(${(Math.sin(t * 9) * 10).toFixed(1)}px)` }}>↓</span>
+    </div>
+  );
+}
+
+// ── V1 hook pool (Owner 2026-09-28): one hook per video, n8n sets seg.hook_visual ──
+// H0 = headline + push-in (control), H1 = headline + chart marks/zoom, H3 = "your call" question + push-in.
+// The headline is fully visible on frame 0 (sound-off swipe window) and sits in the top band above the video.
+// ponytail: 0.55em per char stands in for measuring Oswald 700 caps; switch to @remotion/layout-utils fitText if it clips.
+const HOOK_PUSH = 0.08;   // whole-frame push-in over the hook
+function HookHeadline({ text, question, t, fps, layout, brand }) {
+  const w = 880, words = String(text).split(/\s+/);
+  const longest = Math.max(...words.map((x) => x.length)), CH = 0.55;
+  const size = Math.floor(Math.min(104, w / (longest * CH), (2 * w * 0.92) / (String(text).length * CH)));
+  const bottom = Math.max(380, layout.top - 36);
+  return (
+    <div style={{
+      position: 'absolute', left: 60, right: 60, top: 70, height: bottom - 70,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+    }}>
+      <div style={{
+        transform: `scale(${(1 + 0.04 * (1 - easeOut3((t * fps) / 6))).toFixed(4)})`,
+        background: INK, borderRadius: 26, padding: '26px 40px', boxShadow: '0 14px 34px rgba(0,0,0,.35)',
+        textAlign: 'center', fontFamily: `${brand.font_heading || 'Oswald'}, Arial, sans-serif`, fontWeight: 700,
+        textTransform: 'uppercase', lineHeight: 1.05, letterSpacing: 1,
+      }}>
+        {question && <div style={{ color: brand.accent || '#C9A84C', fontSize: 44, letterSpacing: 4, marginBottom: 10 }}>YOUR CALL</div>}
+        <div style={{ color: '#FFFFFF', fontSize: size }}>{text}</div>
+      </div>
     </div>
   );
 }
@@ -378,8 +409,12 @@ function chartGeom(chart, sw, sh) {
 }
 
 // push-in on the solver's crop, eased over the first 850 ms of the pause, then held
-function ChartZoom({ chart, sw, sh, t, children }) {
-  if (!chart || !sw || !sh) return <AbsoluteFill>{children}</AbsoluteFill>;
+function ChartZoom({ chart, sw, sh, t, push, children }) {
+  if (!chart || !sw || !sh) {
+    // V1 hook H0/H3: slow whole-frame push-in so the opening frame is never a still picture
+    const s = push ? 1 + HOOK_PUSH * Math.min(1, t / push) : 1;
+    return <AbsoluteFill style={push ? { transform: `scale(${s.toFixed(4)})` } : undefined}>{children}</AbsoluteFill>;
+  }
   const g = chartGeom(chart, sw, sh), [cx0, cy0, cx1, cy1] = g.crop;
   const z = Math.max(1, Math.min(CAM_MAX, g.dw / ((cx1 - cx0) * 1.15)));
   const p = easeOut3((t * 1000) / CAM_MS), s = 1 + (z - 1) * p;
@@ -471,7 +506,7 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, sourceW, sourceH, layo
 
       {/* ── FROZEN VIDEO FRAME (blurs while the product card is up) ───────── */}
       <AbsoluteFill style={filters.length || wOut > 0 ? videoStyle : undefined}>
-        <ChartZoom chart={chart} sw={sourceW} sh={sourceH} t={t}>
+        <ChartZoom chart={chart} sw={sourceW} sh={sourceH} t={t} push={seg.hook_visual ? seg.duration : 0}>
           <Freeze frame={frozenVideoFrame}>
             <AbsoluteFill>
               <OffthreadVideo
@@ -499,6 +534,9 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, sourceW, sourceH, layo
       )}
       {seg.fx === 'hook_stamp' && (
         <FxChip text={seg.fx_text} x={CANVAS_W / 2} y={layout.labelY} size={54} bg="#C0392B" brand={brand} t={t - 0.2} fps={fps} />
+      )}
+      {seg.hook_visual && seg.fx_text && (
+        <HookHeadline text={seg.fx_text} question={seg.hook_visual === 'H3'} t={t} fps={fps} layout={layout} brand={brand} />
       )}
       {seg.fx === 'key_term' && (
         <FxChip text={seg.fx_text} x={CANVAS_W / 2} y={layout.labelY} size={50} brand={brand} t={t - (seg.fx_at || 0)} fps={fps} out={3.5} />
@@ -540,12 +578,14 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, sourceW, sourceH, layo
 // Lesson title pinned to the top of the canvas for the full composition.
 // Dark semi-transparent pill background ensures readability on any surface:
 // white letterbox space, chart content, or full-bleed portrait video.
-function LessonTitle({ title, brand }) {
+function LessonTitle({ title, brand, from = 0 }) {
   const fontFamily  = brand.font_heading || 'Oswald';
   const accentColor = brand.accent       || '#C9A84C';
+  const a = clamp01((useCurrentFrame() - from) / 8);
+  if (a <= 0) return null;
 
   return (
-    <AbsoluteFill style={{ pointerEvents: 'none' }}>
+    <AbsoluteFill style={{ pointerEvents: 'none', opacity: a }}>
       <div
         style={{
           position:       'absolute',
