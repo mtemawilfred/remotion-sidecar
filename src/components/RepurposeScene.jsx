@@ -477,7 +477,7 @@ function ChartMarks({ chart, sw, sh, tMs }) {
 // There the zone sat at 52%/21% of the chart. Here every position comes from the hook's lesson mark (the first
 // mark of seg.chart), and search paths start from fixed chart spots. SFX strings are the prototypes' data-sfx
 // cues (file@sec~cut). H1+ drops its "drop line" + draw_pen cue: it needs the move end-point, which is not wired yet.
-const HOOK_ALIAS = { H6b: 'H6r', H2: 'H1+', H2b: 'H1+', H2c: 'H1+', H13: 'H1+', H13b: 'H1+' };   // data not wired yet
+export const HOOK_ALIAS = { H6b: 'H6r', H2: 'H1+', H2b: 'H1+', H2c: 'H1+', H13: 'H1+', H13b: 'H1+' };   // data not wired yet
 const SFX_VOLUME = 0.5;           // under the voice
 const U = CANVAS_W / 100;         // the prototype's cqw
 const EZ = Easing.bezier(0.2, 0.7, 0.2, 1), EZ_IO = Easing.bezier(0.42, 0, 0.58, 1), EZ_OUT = Easing.bezier(0, 0, 0.58, 1), LIN = (x) => x;
@@ -491,13 +491,18 @@ function hookTarget(chart, sw, sh) {
   if (!m) return null;
   const g = chartGeom(chart, sw, sh);
   const a = m.from && m.from.point ? g.P(m.from.point) : g.P(m.to.point), b = m.to && m.to.point ? g.P(m.to.point) : a;
+  return hookZone(a, b, g, { w: CANVAS_W, h: CANVAS_H }, m.text);
+}
+// a, b = the mark's two ends in canvas px; g = where the frame sits ({left, top, dw, dh}); cv = the canvas the hook draws on
+// (Shorts 1080x1920; long form = the PGPresentation chart box)
+export function hookZone(a, b, g, cv, text) {
   let [x0, x1] = [Math.min(a[0], b[0]), Math.max(a[0], b[0])], [y0, y1] = [Math.min(a[1], b[1]), Math.max(a[1], b[1])];
   const minW = 0.2 * g.dw, minH = 0.06 * g.dw;
   // focus = where a close-up should look: a box's centre, but a thin level line's left end (its origin swing), not its empty middle
   const line = y1 - y0 < minH, fx = line ? x0 : (x0 + x1) / 2, fy = (y0 + y1) / 2;
   if (x1 - x0 < minW) { const c = (x0 + x1) / 2; x0 = c - minW / 2; x1 = c + minW / 2; }
   if (y1 - y0 < minH) { const c = (y0 + y1) / 2; y0 = c - minH / 2; y1 = c + minH / 2; }
-  return { g, x: x0, y: y0, w: x1 - x0, h: y1 - y0, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, fx, fy, line, text: String(m.text || '').toUpperCase() };
+  return { g, cv, x: x0, y: y0, w: x1 - x0, h: y1 - y0, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, fx, fy, line, text: String(text || '').toUpperCase() };
 }
 
 const abs = (style) => ({ position: 'absolute', ...style });
@@ -517,20 +522,26 @@ const Brackets = () => ['left:0;top:0', 'right:0;top:0', 'left:0;bottom:0', 'rig
   return <i key={i} style={abs({ ...side, width: 4 * U, height: 4 * U, ...bw })} />;
 });
 // a copy of the frozen frame with canvas point (px,py) magnified m times at container point (X,Y)
-const Magnified = ({ video, px, py, m, X, Y }) => (
-  <div style={abs({ left: X - px, top: Y - py, width: CANVAS_W, height: CANVAS_H, transformOrigin: `${px}px ${py}px`, transform: `scale(${m})` })}>{video}</div>
+const Magnified = ({ video, px, py, m, X, Y, cv }) => (
+  <div style={abs({ left: X - px, top: Y - py, width: cv.w, height: cv.h, transformOrigin: `${px}px ${py}px`, transform: `scale(${m})` })}>{video}</div>
 );
+// pause bars are drawn, not the U+275A glyph: Railway's render box has no symbol font (tofu in exec 68874)
 const FreezeBorder = ({ o, T }) => (<>
   <AbsoluteFill style={{ border: `${1.6 * U}px solid #FFFFFF`, opacity: o }} />
-  <div style={abs({ right: 6 * U, top: T.g.top + 3 * U, opacity: o, font: `700 ${7 * U}px/1 Oswald, Arial, sans-serif`, color: '#FFFFFF' })}>❚❚</div>
+  <div style={abs({ right: 6 * U, top: T.g.top + 3 * U, opacity: o, display: 'flex', gap: 1.5 * U })}>
+    {[0, 1].map((i) => <i key={i} style={{ width: 2.2 * U, height: 5.4 * U, background: '#FFFFFF' }} />)}
+  </div>
 </>);
 const Flash = ({ o }) => (o > 0 ? <AbsoluteFill style={{ background: '#FFFFFF', opacity: o }} /> : null);
-const tagAt = (T) => [T.x + 0.009 * T.g.dw, T.y - 0.072 * T.g.dw];
+// a tag sits above its zone; when the hook camera (<= 1.5x about the zone) would push it off the canvas top (long form: a zone at
+// the chart box top) it sits below instead
+const above = (T, y, below) => (T.cy - 1.5 * (T.cy - y) >= U ? y : below + U);
+const tagAt = (T) => [T.x + 0.009 * T.g.dw, above(T, T.y - 0.072 * T.g.dw, T.y + T.h)];
 const wx = (T, p) => T.g.left + (p / 100) * T.g.dw, wy = (T, p) => T.g.top + (p / 100) * T.g.dh;
 
-const HOOKS = {
+export const HOOKS = {
   'H1+': {   // Spotlight Mark
-    end: 0.7, sfx: 'whoosh_slide@0-7|pop_light@10',
+    end: 0.7, sfx: 'whoosh_slide@0-7|pop_light@10', tag: 'pop_light@10',
     cam: (t) => ({ s: k(t, [[0, 1.28], [100, 1.48]], LIN) }),
     world: (t, T) => {
       const r = k(t, [[0, 100], [7, -300]], EZ_OUT), a = k(t, [[0, 0], [7, 0.6]], EZ_OUT), [lx, ly] = tagAt(T);
@@ -541,36 +552,38 @@ const HOOKS = {
     },
   },
   H1b: {   // Ink Circle
-    end: 1.68, sfx: 'draw_pen@2-16|pop_light@21~0.5',
+    end: 1.68, sfx: 'draw_pen@2-16|pop_light@21~0.5', tag: 'pop_light@21~0.5',
     cam: (t) => ({ s: k(t, [[0, 1.25], [100, 1.42]], LIN) }),
     world: (t, T) => {
       const rx = (T.w * 34) / 58, ry = (T.h * 8.5) / 8.3;
       return (<>
         <WorldFill T={T} style={{ opacity: k(t, [[0, 0], [10, 1]]),
           background: `radial-gradient(ellipse ${rx * 37 / 34}px ${ry * 12 / 8.5}px at ${T.cx - T.g.left}px ${T.cy - T.g.top}px, rgba(12,14,22,0) 92%, rgba(12,14,22,.58) 100%)` }} />
-        <svg width={CANVAS_W} height={CANVAS_H} style={abs({ left: 0, top: 0, overflow: 'visible' })}>
+        <svg width={T.cv.w} height={T.cv.h} style={abs({ left: 0, top: 0, overflow: 'visible' })}>
           <ellipse cx={T.cx} cy={T.cy} rx={rx} ry={ry} transform={`rotate(-3 ${T.cx} ${T.cy})`} pathLength={100} fill="none" stroke={ORANGE}
             strokeWidth={0.011 * T.g.dw} strokeLinecap="round" strokeDasharray={100} strokeDashoffset={k(t, [[2, 100], [16, 0]], EZ_IO)} />
         </svg>
-        <Tag text={T.text} x={T.cx - 0.16 * T.g.dw} y={T.cy - ry - 0.065 * T.g.dw}
+        <Tag text={T.text} x={T.cx - 0.16 * T.g.dw} y={above(T, T.cy - ry - 0.065 * T.g.dw, T.cy + ry)}
           style={{ opacity: k(t, [[18, 0], [21, 1]]), transform: `scale(${k(t, [[18, 0.6], [21, 1.1], [24, 1]])})` }} />
       </>);
     },
   },
   H8: {   // Magnifier
-    end: 3.5, sfx: 'whoosh_slide@0-20|whoosh_slide@20-36|click_soft@36|pop_medium@50',
+    end: 3.5, sfx: 'whoosh_slide@0-20|whoosh_slide@20-36|click_soft@36|pop_medium@50', tag: 'pop_medium@50',
     world: (t, T, video) => {
       const D = 0.36 * T.g.dw, m = 2.2;
       // a line's origin sits a third into the lens view so the line runs across it; the lens stays on the chart
       const fx = Math.max(T.g.left + D / 2 + U, Math.min(T.g.left + T.g.dw - D / 2 - U, T.fx + (T.line ? D / m / 6 : 0)));
-      const cx = k(t, [[0, wx(T, 20)], [20, wx(T, 45)], [36, fx]], EZ_IO), cy = k(t, [[0, wy(T, 60)], [20, wy(T, 40)], [36, T.fy]], EZ_IO);
+      // and inside the canvas (long form: the canvas is the chart box, so a zone at its top edge would cut the lens off)
+      const fy = Math.max(D / 2 + U, Math.min(T.cv.h - D / 2 - U, T.fy));
+      const cx = k(t, [[0, wx(T, 20)], [20, wx(T, 45)], [36, fx]], EZ_IO), cy = k(t, [[0, wy(T, 60)], [20, wy(T, 40)], [36, fy]], EZ_IO);
       const mh = Math.min(0.6 * D, Math.max(0.15 * D, T.h * m)), mp = k(t, [[38, 0], [46, 1]], EZ_OUT);
       return (<>
         <WorldFill T={T} style={{ background: 'rgba(12,14,22,.45)' }} />
         <div style={abs({ left: cx - D / 2 - U, top: cy - D / 2 - U, width: D, height: D, borderRadius: '50%', overflow: 'hidden',
           border: `${U}px solid ${GOLD}`, boxShadow: `0 ${1.5 * U}px ${5 * U}px rgba(0,0,0,.6)` })}>
-          <Magnified video={video} px={cx} py={cy} m={m} X={D / 2} Y={D / 2} />
-          <div style={abs({ left: 0.04 * D, width: 0.92 * D, top: (D - mh) / 2, height: mh, boxSizing: 'border-box', border: `${0.8 * U}px solid ${ORANGE}`,
+          <Magnified video={video} px={cx} py={cy} m={m} X={D / 2} Y={D / 2} cv={T.cv} />
+          <div style={abs({ left: 0.04 * D, width: 0.92 * D, top: (D - mh) / 2 + (T.fy - fy) * m, height: mh, boxSizing: 'border-box', border: `${0.8 * U}px solid ${ORANGE}`,
             borderRadius: U, opacity: mp, transform: `scaleX(${mp})` })} />
         </div>
         <Tag text={T.text} x={fx - 0.16 * T.g.dw} y={T.fy + D / 2 + U + 0.02 * T.g.dw + 6 * U < T.g.top + T.g.dh
@@ -582,13 +595,13 @@ const HOOKS = {
   H8b: {   // Lift-Out
     end: 1.89, sfx: 'whoosh_slide@10-20|pop_medium@20',
     world: (t, T, video) => {
-      const s = Math.min(1.5, (0.94 * CANVAS_W) / T.w), dy = CANVAS_H * 0.41 - T.cy;
+      const s = Math.min(1.5, (0.94 * T.cv.w) / T.w, (0.5 * T.cv.h) / T.h), dy = T.cv.h * 0.41 - T.cy;
       const ty = k(t, [[10, 0], [20, dy]]), sc = k(t, [[10, 1], [20, s * 1.053], [23, s]]), sh = k(t, [[10, 0], [23, 0.7]]);
       return (<>
         <WorldFill T={T} style={{ background: 'rgba(12,14,22,.45)', opacity: k(t, [[10, 0], [18, 1]]) }} />
         <div style={abs({ left: T.x - 0.6 * U, top: T.y - 0.6 * U, width: T.w, height: T.h, overflow: 'hidden', borderRadius: U, border: `${0.6 * U}px solid ${GOLD}`,
           transform: `translateY(${ty}px) scale(${sc})`, boxShadow: `0 ${2.5 * U}px ${6 * U}px rgba(0,0,0,${sh})` })}>
-          <div style={abs({ left: -T.x, top: -T.y, width: CANVAS_W, height: CANVAS_H })}>{video}</div>
+          <div style={abs({ left: -T.x, top: -T.y, width: T.cv.w, height: T.cv.h })}>{video}</div>
         </div>
         <Tag text={T.text} x={T.cx - 0.15 * T.g.dw} y={T.cy + dy + (T.h * s) / 2 + 0.04 * T.g.dw}
           style={{ opacity: k(t, [[22, 0], [27, 1]]), transform: `translateY(${k(t, [[22, -2 * U], [27, 0]])}px)` }} />
@@ -602,18 +615,20 @@ const HOOKS = {
       <Zone T={T} style={{ border: `${0.5 * U}px solid ${GOLD}`, opacity: k(t, [[4, 0], [7, 1]]), transform: `scale(${k(t, [[4, 1.2], [7, 1]])})` }} />
     </>),
     screen: (t, T, video) => {
-      const W = 88 * U, H = 34 * U, B = 0.8 * U, below = T.cy < CANVAS_H * 0.55;
-      const top = Math.max(200, Math.min(CANVAS_H - 480 - H, below ? T.y + T.h + 33 * U : T.y - 33 * U - H));
+      // kept clear of the title band (top 10.4%) and the captions (bottom 25%); x follows the zone on a wide canvas
+      const W = 88 * U, H = 34 * U, B = 0.8 * U, below = T.cy < T.cv.h * 0.55;
+      const top = Math.max(Math.round(0.1042 * T.cv.h), Math.min(T.cv.h * 0.75 - H, below ? T.y + T.h + 33 * U : T.y - 33 * U - H));
+      const ix = Math.max(6 * U, Math.min(T.cv.w - 6 * U - W, T.cx - W / 2));
       const m = Math.min(1.45, (W - 2 * B - 2.3 * U) / T.w), iw = W - 2 * B, ih = H - 2 * B, cut = k(t, [[12, 100], [20, 0]]);
       const [ey, iy] = below ? [T.y + T.h, top] : [T.y, top + H], off = k(t, [[8, 100], [14, 0]]);
       return (<>
-        <svg width={CANVAS_W} height={CANVAS_H} style={abs({ left: 0, top: 0 })}>
-          {[[T.x, 6 * U], [T.x + T.w, 94 * U]].map(([x1, x2], i) => (
+        <svg width={T.cv.w} height={T.cv.h} style={abs({ left: 0, top: 0 })}>
+          {[[T.x, ix], [T.x + T.w, ix + W]].map(([x1, x2], i) => (
             <line key={i} x1={x1} y1={ey} x2={x2} y2={iy} pathLength={100} stroke={GOLD} strokeWidth={0.5 * U} strokeDasharray={100} strokeDashoffset={off} />))}
         </svg>
-        <div style={abs({ left: 6 * U, top, width: W, height: H, boxSizing: 'border-box', overflow: 'hidden', border: `${B}px solid ${GOLD}`, borderRadius: 2 * U,
+        <div style={abs({ left: ix, top, width: W, height: H, boxSizing: 'border-box', overflow: 'hidden', border: `${B}px solid ${GOLD}`, borderRadius: 2 * U,
           background: '#3A373E', boxShadow: `0 ${1.5 * U}px ${5 * U}px rgba(0,0,0,.6)`, clipPath: below ? `inset(0 0 ${cut}% 0)` : `inset(${cut}% 0 0 0)` })}>
-          <Magnified video={video} px={T.cx} py={T.cy} m={m} X={iw / 2} Y={ih / 2} />
+          <Magnified video={video} px={T.cx} py={T.cy} m={m} X={iw / 2} Y={ih / 2} cv={T.cv} />
           <div style={abs({ left: (iw - T.w * m) / 2, top: (ih - T.h * m) / 2, width: T.w * m, height: T.h * m, boxSizing: 'border-box',
             border: `${0.6 * U}px solid ${ORANGE}`, borderRadius: U, opacity: k(t, [[21, 0], [25, 1]]) })} />
         </div>
@@ -700,7 +715,7 @@ const HOOKS = {
         <Tag text={T.text} x={lx} y={ly} style={{ opacity: k(t, [[69, 0], [73, 1]]), transform: `translateY(${k(t, [[69, U], [73, 0]])}px)` }} />
         <div style={abs({ left: cx - D / 2 - 0.7 * U, top: cy - D / 2 - 0.7 * U, width: D, height: D, borderRadius: '50%', border: `${0.7 * U}px solid ${GOLD}`,
           boxShadow: `0 0 0 ${0.4 * U}px rgba(12,14,22,.35)`, opacity: k(t, [[56, 1], [62, 0]]), transform: `scale(${k(t, [[56, 1], [59, 0.85], [62, 1.3]])})` })} />
-        <svg width={CANVAS_W} height={CANVAS_H} style={abs({ left: 0, top: 0, overflow: 'visible' })}>
+        <svg width={T.cv.w} height={T.cv.h} style={abs({ left: 0, top: 0, overflow: 'visible' })}>
           <polyline points={tick} pathLength={100} fill="none" stroke="#3CD68A" strokeWidth={0.016 * dw} strokeLinecap="round" strokeLinejoin="round"
             strokeDasharray={100} strokeDashoffset={k(t, [[58, 100], [63, 0]])} opacity={k(t, [[86, 1], [92, 0]])} />
         </svg>
@@ -716,7 +731,7 @@ const HOOKS = {
       const rot = k(t, [[9, -28], [10.5, -23], [12, -31], [13.5, -26.5], [15, -28]], EZ_OUT);
       return (<>
         <Zone T={T} style={{ border: `${0.7 * U}px solid ${ORANGE}`, opacity: k(t, [[8.8, 0], [9.2, 1]]), background: `rgba(255,122,69,${k(t, [[8.8, 0], [9.2, 0.6], [18, 0.18]])})` }} />
-        <Tag text={T.text} x={T.x + 0.209 * dw} y={T.y - 0.072 * dw} style={{ opacity: k(t, [[11, 0], [15, 1]]), transform: `translateY(${k(t, [[11, U], [15, 0]])}px)` }} />
+        <Tag text={T.text} x={T.x + 0.209 * dw} y={tagAt(T)[1]} style={{ opacity: k(t, [[11, 0], [15, 1]]), transform: `translateY(${k(t, [[11, U], [15, 0]])}px)` }} />
         <div style={abs({ left: T.x - 0.34 * dw, top: T.cy - 0.025 * dw, width: 0.34 * dw, height: 0.05 * dw, transformOrigin: '100% 50%',
           transform: `translate(${tx}px, ${ty}px) rotate(${rot}deg)` })}>
           <svg viewBox="0 0 100 14" preserveAspectRatio="none" style={abs({ inset: 0, width: '100%', height: '100%', overflow: 'visible', filter: `drop-shadow(0 ${0.8 * U}px ${U}px rgba(0,0,0,.6))` })}>
@@ -748,11 +763,11 @@ const HOOKS = {
 };
 
 // the hook's camera wraps the frozen frame + world-space marks; screen-space parts (flash, freeze border, inset) sit on top
-function HookV4({ id, T, t, video }) {
+export function HookV4({ id, T, t, video }) {
   const H = HOOKS[id], c = H.cam ? H.cam(t, T) : { s: 1 };
   // zoom about the zone centre, shifted only as far as needed to keep the focus (a line's origin) 5% inside the frame
   const fit = (o, f, W) => (c.s > 1.001 ? Math.min((c.s * f - 0.05 * W) / (c.s - 1), Math.max((c.s * f - 0.95 * W) / (c.s - 1), o)) : o);
-  const ox = fit(T.cx, T.fx, CANVAS_W), oy = fit(T.cy, T.fy, CANVAS_H);
+  const ox = fit(T.cx, T.fx, T.cv.w), oy = fit(T.cy, T.fy, T.cv.h);
   return (<>
     <AbsoluteFill style={{ transformOrigin: `${ox}px ${oy}px`,
       transform: `scale(${c.s.toFixed(4)}) translate(${(((c.x || 0) * T.g.dw) / 100).toFixed(1)}px, ${(((c.y || 0) * T.g.dh) / 100).toFixed(1)}px)` }}>
@@ -782,7 +797,9 @@ function sfxCues(cues, scale) {
     return { file, start: at - lead, end: len != null ? at + len : null };   // file time 0 plays at `start` (may be < 0)
   });
 }
-function HookSfx({ cues, scale, fps }) {
+// the hook's cue string; a label's own sound is dropped when the mark has no text (no movement, no sound)
+export const hookCues = (id, T) => HOOKS[id].sfx.split('|').filter((c) => T.text || c !== HOOKS[id].tag).join('|');
+export function HookSfx({ cues, scale, fps }) {
   return sfxCues(cues, scale).map(({ file, start, end }, i) => {
     const from = Math.max(0, Math.round(start * fps)), trim = Math.max(0, Math.round(-start * fps));
     const dur = end != null ? Math.max(1, Math.round(end * fps) - from) : undefined;
@@ -850,7 +867,7 @@ function FreezeSegment({ seg, srcUrl, ctaUrl, fps, brand, sourceW, sourceH, layo
           </ChartZoom>
         )}
       </AbsoluteFill>
-      {hookT && <HookSfx cues={hookV4.sfx} scale={hookK} fps={fps} />}
+      {hookT && <HookSfx cues={hookCues(hookId, hookT)} scale={hookK} fps={fps} />}
 
       {/* ── RETENTION EFFECTS (beneath the pop-up and captions) ───────────── */}
       <WhiteFlash a={flashA} />

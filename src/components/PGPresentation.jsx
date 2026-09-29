@@ -27,7 +27,7 @@ import { Video } from '@remotion/media';
 import { loadFont as loadInter } from '@remotion/google-fonts/Inter';
 import { loadFont as loadOswald } from '@remotion/google-fonts/Oswald';
 // the Owner-approved short-form product pop-up (RepurposeScene), reused unchanged: same word match, same motion curve
-import { productWindow, productPopupState } from './RepurposeScene';
+import { productWindow, productPopupState, HOOKS, HOOK_ALIAS, HookV4, HookSfx, hookZone, hookCues } from './RepurposeScene';
 
 // the design names Inter + Oswald; unloaded, the render box silently falls back to Arial/Impact
 const { fontFamily: INTER } = loadInter('normal', { weights: ['700', '800'], subsets: ['latin'] });
@@ -57,6 +57,19 @@ function beatCam(beats, i, src) {
     fx = (x0 + x1) / 2; fy = (y0 + y1) / 2; zmax = Math.min(zmax, (src.w * 0.84) / Math.max(1, x1 - x0), (src.h * 0.84) / Math.max(1, y1 - y0));
   }
   return { z: Math.max(1, Math.min(CAM_Z[i % CAM_Z.length], zmax)), fx, fy };
+}
+// the v4 hook beat (render-props sets beat.hook): its zone in chart-box px (the hook aims at the beat's first level/zone/ring),
+// the time scale (a short beat runs the hook faster, as on Shorts), and the framing it ends on, so the next beat eases on from there
+function hookOf(beats, src, S) {
+  const i = beats.findIndex((b) => b.hook), b = beats[i], id = b && (HOOK_ALIAS[b.hook] || b.hook), H = id && HOOKS[id];
+  const m = H && (b.marks.find((x) => ['zone', 'level', 'ring', 'underline'].includes(x.kind)) || b.marks[0]);
+  if (!m) return null;
+  const [x0, y0, x1, y1] = m.box, cw = src.w * S, ch = src.h * S;
+  const T = hookZone([x0 * S, y0 * S], [x1 * S, y1 * S], { left: 0, top: 0, dw: cw, dh: ch }, { w: cw, h: ch }, m.text || b.marks.find((x) => x.text)?.text);
+  const k = Math.max(0.2, Math.min(1, ((b.z - b.a) / 1000 - 0.4) / H.end)), s = H.cam ? H.cam((b.z - b.a) / 1000 / k, T).s : 1;
+  // ponytail: ignores HookV4's focus-fit origin shift (only a line wider than the zoomed view); the 850 ms ease hides the rest
+  const endCam = { z: s / CREEP, fx: (T.cx + (cw / 2 - T.cx) / s) / S, fy: (T.cy + (ch / 2 - T.cy) / s) / S };
+  return { i, id, T, k, endCam, rest: beats.map((x, j) => (j === i ? { ...x, marks: x.marks.filter((y) => y !== m) } : x)) };
 }
 // Text that must fit its box (Owner pt70: no overflow, no "..."). Largest size <= base where every word fits the width and the
 // whole string fits `lines` lines. ponytail: width is estimated (Inter 800 caps ~0.68 em, mixed ~0.58 em), not measured;
@@ -107,7 +120,11 @@ export const PGPresentation = (p) => {
   // FLOOR camera: every beat has its own framing (prototype scene scales 1.02-1.17 around what the beat marks), eased
   // 850 ms from the last one, then a slow 2.5% creep, so the picture is never parked. An explicit beat.camera zoom
   // (design D.zoom) is the same move with the planner's scale; spotlight (D.spotlight) keeps its own 600 ms fade.
-  const cams = React.useMemo(() => beats.map((b, i) => beatCam(beats, i, src)), [beats, src]);
+  // Hook Pool v4 (Owner 2026-09-29: the 20 Shorts hooks join the long-form pool): render-props puts beat.hook on the opening
+  // hold. That beat draws the Shorts hook INSIDE the chart box (the box is the hook's canvas, so its camera zooms inside the
+  // chart like the floor camera does); its own marks draw on top, except the one the hook aims at.
+  const hk = React.useMemo(() => hookOf(beats, src, S), [beats, src, S]);
+  const cams = React.useMemo(() => { const c = beats.map((b, i) => beatCam(beats, i, src)); if (hk) c[hk.i] = hk.endCam; return c; }, [beats, src, hk]);
   const bp = out(c01((now - beat.a) / CAM_MS)), creep = (x) => 1 + (CREEP - 1) * io(c01(x));
   const c0 = cams[k - 1] || cams[k], c1 = cams[k], q = (now - beat.a) / Math.max(1, beat.z - beat.a);
   const zoom = interpolate(bp, [0, 1], [c0.z * CREEP, c1.z]) * creep(q);
@@ -143,7 +160,18 @@ export const PGPresentation = (p) => {
         ))}
       </div>
       <AbsoluteFill style={{ background: 'linear-gradient(90deg,rgba(9,15,25,.45),transparent 18%,transparent 82%,rgba(9,15,25,.45))' }} />
-      <div style={{ position: 'absolute', left, top, width: src.w, height: src.h, overflow: 'hidden', borderRadius: 10 / sc,
+      {hk && k === hk.i ? (
+        <div style={{ position: 'absolute', left, top, width: hk.T.cv.w, height: hk.T.cv.h, overflow: 'hidden', borderRadius: 10,
+          boxShadow: '0 25px 60px rgba(0,0,0,.55)', filter: filt || undefined }}>
+          <HookV4 id={hk.id} T={hk.T} t={(now - beat.a) / 1000 / hk.k} video={
+            <AbsoluteFill>
+              <Freeze frame={0}><Clip src={p.video} from={f(beat.from_ms)} /></Freeze>
+              <svg viewBox={`0 0 ${src.w} ${src.h}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+                <Marks beats={hk.rest} now={now} u={1 / S} />
+              </svg>
+            </AbsoluteFill>} />
+        </div>
+      ) : <div style={{ position: 'absolute', left, top, width: src.w, height: src.h, overflow: 'hidden', borderRadius: 10 / sc,
         boxShadow: '0 25px 60px rgba(0,0,0,.55)', transform: `translateX(${shake}px) scale(${sc})`, transformOrigin: '0 0' }}>
         <div style={{ position: 'absolute', inset: 0, transform: `translate(${tx}px, ${ty}px) scale(${zoom})`, transformOrigin: '0 0',
           filter: filt || undefined }}>
@@ -164,7 +192,12 @@ export const PGPresentation = (p) => {
             {beat.question?.pin && <QPin b={beat} now={now} u={1 / S} />}
           </svg>
         </div>
-      </div>
+      </div>}
+      {hk && (
+        <Sequence from={f(beats[hk.i].a)} layout="none">
+          <HookSfx cues={hookCues(hk.id, hk.T)} scale={hk.k} fps={fps} />
+        </Sequence>
+      )}
       {zk > 0 && <div style={{ position: 'absolute', ...box, background: `radial-gradient(circle at 50% 50%, rgba(18,24,34,0) ${box.height * 0.3}px, rgba(18,24,34,${(0.25 * zk).toFixed(3)}) ${box.height * 0.9}px)` }} />}
       {drama && rwA > 0 && <div style={{ position: 'absolute', ...box, opacity: rwA, background: 'repeating-linear-gradient(0deg, rgba(18,24,34,.07) 0 4px, transparent 4px 12px)' }} />}
       {cam?.text && (() => { // zoom label follows the transformed mark (pop, D.zoom); spotlight label sits beside the mark
