@@ -42,7 +42,7 @@ const PANEL = { x: Math.round(W * 0.645), y: 96, w: Math.round(W * 0.325), h: 78
 const SIDE = new Set(['definition', 'spine', 'quick', 'mistake', 'tease', 'astro', 'p-statement', 'p-list', 'p-compare']);
 // a beat's framing: centred on everything drawn on this frame (its marks + marks still up since the last cut + treatment
 // points), zoomed no further than keeps all of it inside 84% of the chart. Rewinds / contrasts stay at 1x.
-function beatCam(beats, i, src) {
+export function beatCam(beats, i, src) {
   const b = beats[i], pts = [];
   for (let j = i; j >= 0; j--) { beats[j].marks.forEach((m) => { if (j === i || m.carried || j === i - 1) pts.push(m.box.slice(0, 2), m.box.slice(2, 4)); }); if (beats[j].cut) break; }
   const g = b.graphic, add = (xy) => xy && pts.push(xy);
@@ -125,6 +125,7 @@ export const PGPresentation = (p) => {
   // chart like the floor camera does); its own marks draw on top, except the one the hook aims at.
   const hk = React.useMemo(() => hookOf(beats, src, S), [beats, src, S]);
   const cams = React.useMemo(() => { const c = beats.map((b, i) => beatCam(beats, i, src)); if (hk) c[hk.i] = hk.endCam; return c; }, [beats, src, hk]);
+  const capSides = React.useMemo(() => captionSides(p.captions, beats, cams, src, S, p.rail), [p.captions, beats, cams, src, S, p.rail]);
   const bp = out(c01((now - beat.a) / CAM_MS)), creep = (x) => 1 + (CREEP - 1) * io(c01(x));
   const c0 = cams[k - 1] || cams[k], c1 = cams[k], q = (now - beat.a) / Math.max(1, beat.z - beat.a);
   const zoom = interpolate(bp, [0, 1], [c0.z * CREEP, c1.z]) * creep(q);
@@ -236,7 +237,7 @@ export const PGPresentation = (p) => {
           <Broll b={b} fps={fps} assets={p.assets} />
         </Sequence>
       ))}
-      <Captions words={p.captions} now={now} fps={fps} />
+      <Captions words={p.captions} now={now} fps={fps} sides={capSides} />
       <Audio src={url(p.audio)} />
     </AbsoluteFill>
   );
@@ -1075,7 +1076,26 @@ export function captionLines(words) {
   if (cur.length) chunks.push(cur);
   return chunks;
 }
-function Captions({ words, now, fps }) {
+// pt75p (zwe6u5 5:18: the bubble hid the SSL line being taught): a caption line moves to the top slot when a mark live
+// during it lands in the bottom caption band and the top slot is clear. Decided once per line (the switch happens as a new
+// line pops in, never mid-sentence); not while a card or the step rail is up (they own the top / right column).
+// ponytail: screen y from the mark's beat END framing, push ignored (push keeps the chart's vertical centre).
+const CAP_BOTTOM = 56, CAP_TOP = 120, CAP_BAND = 230;
+export function captionSides(words, beats, cams, src, S, rail) {
+  const lines = captionLines(words), top0 = (H - src.h * S) / 2;
+  const ys = (m, c) => { const ty = Math.max(src.h * (1 - c.z), Math.min(0, src.h / 2 - c.z * c.fy)); return [m.box[1], m.box[3]].map((y) => top0 + S * (ty + c.z * y)); };
+  return lines.map((line, i) => {
+    const a = line[0].a, z = lines[i + 1]?.[0].a ?? line.at(-1).z ?? a;
+    if (beats.some((b) => b.graphic && b.a < z && b.z > a) || (rail && a < rail.z && z > rail.at[0].a)) return false;
+    const live = [];
+    beats.forEach((b, k) => b.marks.forEach((m) => { // Marks' own lifetime rule
+      const cutAt = beats.slice(k + 1).find((x) => x.cut)?.a ?? Infinity, gone = m.carried ? cutAt : Math.min(cutAt, beats[k + 1] ? beats[k + 1].z : b.z);
+      if (m.at_ms - LEAD_MS < z && gone > a && cams[k]) live.push(ys(m, cams[k]));
+    }));
+    return live.some(([, y1]) => y1 > H - CAP_BOTTOM - CAP_BAND) && live.every(([y0]) => y0 > CAP_TOP + CAP_BAND);
+  });
+}
+function Captions({ words, now, fps, sides }) {
   const chunks = React.useMemo(() => captionLines(words), [words]);
   if (!words.length || now < words[0].a) return null;
   let k = 0; chunks.forEach((c, i) => { if (now >= c[0].a) k = i; });
@@ -1083,7 +1103,7 @@ function Captions({ words, now, fps }) {
   const sinceFirst = fr(now - words[0].a), sinceLine = fr(now - line[0].a), bubbleF = k === 0 ? sinceLine - 3 : sinceLine;
   let bob = 0; line.forEach((w) => { const d = fr(now - w.a); if (d >= 0 && d < 5) bob = Math.max(bob, 1 - d / 5); });
   return (
-    <div style={{ position: 'absolute', left: 96, right: 96, bottom: 56, display: 'flex', flexDirection: right ? 'row-reverse' : 'row',
+    <div style={{ position: 'absolute', left: 96, right: 96, ...(sides?.[k] ? { top: CAP_TOP } : { bottom: CAP_BOTTOM }), display: 'flex', flexDirection: right ? 'row-reverse' : 'row',
       alignItems: 'flex-end', gap: 26 * K }}>
       <Img src={staticFile('assets/avatar/profile_picture.jpg')} style={{ flex: 'none', width: AV, height: AV, borderRadius: '50%',
         background: '#fff', border: `${8 * K}px solid ${GOLD}`, boxShadow: `0 0 0 ${6 * K}px ${CAP_INK}, 0 ${12 * K}px ${30 * K}px rgba(0,0,0,.35)`,
